@@ -1,21 +1,23 @@
 import numpy as np
-
 import sounddevice as sd
 from mpmath import mp
 
+# Optional: for visualization (install with: pip install matplotlib)
+try:
+    import matplotlib.pyplot as plt
+    from scipy import signal
+    VISUALIZATION_AVAILABLE = True
+except ImportError:
+    VISUALIZATION_AVAILABLE = False
 
-def calculate_frequencies(start_freq, num_steps=10, num_octaves=1, precision=2):
+
+# =============================================================================
+# FREQUENCY MAPPING FUNCTIONS
+# =============================================================================
+
+def calculate_frequencies_equal_temperament(start_freq, num_steps=10, num_octaves=1, precision=2):
     """
-    Calculate frequencies dividing octaves into equal steps.
-
-    Parameters:
-    start_freq (float): Starting frequency in Hz
-    num_steps (int): Number of steps to divide each octave into (default: 10)
-    num_octaves (float): Number of octaves to calculate (default: 1)
-    precision (int): Number of decimal places for rounding (default: 2)
-
-    Returns:
-    list: List of frequencies including start and end frequencies
+    Calculate frequencies dividing octaves into equal steps (original method).
     """
     total_steps = int(num_steps * num_octaves)
     target_multiplier = 2 ** num_octaves
@@ -31,227 +33,449 @@ def calculate_frequencies(start_freq, num_steps=10, num_octaves=1, precision=2):
     return frequencies
 
 
-def get_pi(n):
+def calculate_frequencies_harmonic_series(base_freq=220, num_harmonics=10):
     """
-    Returns the first n decimal places of pi using mpmath for high precision.
+    Calculate frequencies using the natural harmonic series.
+    All frequencies are integer multiples of the fundamental, creating
+    mathematically related tones that blend naturally.
 
     Parameters:
-    n (int): Number of decimal places desired
+    base_freq (float): Fundamental frequency in Hz (default: 220 Hz = A3)
+    num_harmonics (int): Number of harmonics to generate (default: 10 for digits 0-9)
 
     Returns:
-    list: List of integers representing each decimal place of pi
+    list: Frequencies for harmonics 1 through num_harmonics
+
+    Harmonic series for base_freq=220:
+    0 → 220 Hz  (1st harmonic, fundamental)
+    1 → 440 Hz  (2nd harmonic, octave)
+    2 → 660 Hz  (3rd harmonic, octave + fifth)
+    3 → 880 Hz  (4th harmonic, 2 octaves)
+    4 → 1100 Hz (5th harmonic, 2 oct + major 3rd)
+    5 → 1320 Hz (6th harmonic, 2 oct + fifth)
+    6 → 1540 Hz (7th harmonic, ~minor 7th)
+    7 → 1760 Hz (8th harmonic, 3 octaves)
+    8 → 1980 Hz (9th harmonic, 3 oct + major 2nd)
+    9 → 2200 Hz (10th harmonic, 3 oct + major 3rd)
     """
-    mp.dps = n + 10  # Set precision with some buffer
+    return [base_freq * (i + 1) for i in range(num_harmonics)]
+
+
+def calculate_frequencies_continuous(min_freq=110, max_freq=880, num_values=100):
+    """
+    Calculate frequencies as a continuous gradient for digit pairs (00-99).
+    Each value gets a unique frequency.
+
+    Parameters:
+    min_freq (float): Lowest frequency (for value 0)
+    max_freq (float): Highest frequency (for value 99)
+    num_values (int): Number of discrete frequency values (default: 100)
+
+    Returns:
+    list: Frequencies mapped linearly across the range
+    """
+    return [min_freq + (i / (num_values - 1)) * (max_freq - min_freq) for i in range(num_values)]
+
+
+# =============================================================================
+# IRRATIONAL NUMBER FUNCTIONS
+# =============================================================================
+
+def get_pi(n):
+    """Returns the first n digits of pi (including the 3)."""
+    mp.dps = n + 10
     pi_str = str(mp.pi)
-
-    # Remove the decimal point and take first n+1 digits (including the 3)
     pi_digits = pi_str.replace(".", "")[:n+1]
-
     return [int(d) for d in pi_digits]
 
 
 def get_e(n):
-    """
-    Returns the first n decimal places of e (Euler's number) using mpmath for high precision.
-
-    Parameters:
-    n (int): Number of decimal places desired
-
-    Returns:
-    list: List of integers representing each decimal place of e
-    """
-    mp.dps = n + 10  # Set precision with some buffer
+    """Returns the first n digits of e (including the 2)."""
+    mp.dps = n + 10
     e_str = str(mp.e)
-
-    # Remove the decimal point and take first n+1 digits (including the 2)
     e_digits = e_str.replace(".", "")[:n+1]
-
     return [int(d) for d in e_digits]
+
+
+def get_sqrt2(n):
+    """Returns the first n digits of √2 (square root of 2)."""
+    mp.dps = n + 10
+    sqrt2_str = str(mp.sqrt(2))
+    sqrt2_digits = sqrt2_str.replace(".", "")[:n+1]
+    return [int(d) for d in sqrt2_digits]
+
+
+def get_twelfth_root_of_2(n):
+    """
+    Returns the first n digits of the 12th root of 2.
+    This is the semitone ratio in equal temperament (~1.05946309).
+    """
+    mp.dps = n + 10
+    root12_str = str(mp.root(2, 12))
+    root12_digits = root12_str.replace(".", "")[:n+1]
+    return [int(d) for d in root12_digits]
+
+
+def get_phi(n):
+    """Returns the first n digits of φ (golden ratio)."""
+    mp.dps = n + 10
+    phi_str = str(mp.phi)
+    phi_digits = phi_str.replace(".", "")[:n+1]
+    return [int(d) for d in phi_digits]
+
+
+def get_sqrt3(n):
+    """Returns the first n digits of √3."""
+    mp.dps = n + 10
+    sqrt3_str = str(mp.sqrt(3))
+    sqrt3_digits = sqrt3_str.replace(".", "")[:n+1]
+    return [int(d) for d in sqrt3_digits]
+
+
+def get_ln2(n):
+    """Returns the first n digits of ln(2) (natural log of 2)."""
+    mp.dps = n + 10
+    ln2_str = str(mp.ln(2))
+    # ln(2) starts with 0.693..., so handle leading zero
+    ln2_digits = ln2_str.replace(".", "")[:n+1]
+    return [int(d) for d in ln2_digits]
+
+
+# Mapping of constant names to functions
+IRRATIONAL_CONSTANTS = {
+    'pi': ('Pi', get_pi, '3.14159...'),
+    'e': ('e (Euler\'s number)', get_e, '2.71828...'),
+    'sqrt2': ('sqrt(2) (Square root of 2)', get_sqrt2, '1.41421...'),
+    'root12_2': ('12th root of 2 (semitone ratio)', get_twelfth_root_of_2, '1.05946...'),
+    'phi': ('Phi (Golden ratio)', get_phi, '1.61803...'),
+    'sqrt3': ('sqrt(3) (Square root of 3)', get_sqrt3, '1.73205...'),
+    'ln2': ('ln(2) (Natural log of 2)', get_ln2, '0.69314...'),
+}
 
 
 def get_irrational_digits(constant, n):
     """
-    Returns the first n decimal places of the specified irrational constant.
+    Returns the first n digits of the specified irrational constant.
 
     Parameters:
-    constant (str): Either 'pi' or 'e'
-    n (int): Number of decimal places desired
+    constant (str): One of: 'pi', 'e', 'sqrt2', 'root12_2', 'phi', 'sqrt3', 'ln2'
+    n (int): Number of digits desired
 
     Returns:
-    list: List of integers representing each decimal place
+    list: List of integers representing each digit
     """
-    if constant.lower() == 'pi':
-        return get_pi(n)
-    elif constant.lower() == 'e':
-        return get_e(n)
+    constant = constant.lower()
+    if constant in IRRATIONAL_CONSTANTS:
+        _, func, _ = IRRATIONAL_CONSTANTS[constant]
+        return func(n)
     else:
-        raise ValueError(f"Unknown constant '{constant}'. Choose 'pi' or 'e'.")
+        available = ', '.join(IRRATIONAL_CONSTANTS.keys())
+        raise ValueError(f"Unknown constant '{constant}'. Choose from: {available}")
 
 
-def map_numbers_to_frequencies(numbers, frequencies):
+def get_irrational_digit_pairs(constant, n):
     """
-    Maps single digits to frequency indices.
+    Returns digit pairs (00-99) from the irrational constant.
+    Groups consecutive digits into pairs for finer frequency resolution.
 
     Parameters:
-    numbers (list): List of integers 0-9
-    frequencies (list): List of frequencies
+    constant (str): The irrational constant name
+    n (int): Number of digit pairs desired
 
     Returns:
-    dict: Dictionary mapping each number to its corresponding frequency
+    list: List of integers 0-99 representing digit pairs
     """
-    if not all(0 <= num <= 9 for num in numbers):
-        raise ValueError("All numbers must be between 0 and 9")
+    # Get twice as many single digits as we need pairs
+    digits = get_irrational_digits(constant, n * 2 + 1)
 
-    mapping = {num: frequencies[idx] for idx, num in enumerate(numbers)}
+    # Group into pairs
+    pairs = []
+    for i in range(0, len(digits) - 1, 2):
+        pair_value = digits[i] * 10 + digits[i + 1]
+        pairs.append(pair_value)
+        if len(pairs) >= n:
+            break
 
-    return mapping
+    return pairs
 
 
-def play_frequencies(frequencies, duration=0.2, amplitude=0.3, sample_rate=44100, crossfade=0.05):
+# =============================================================================
+# FREQUENCY MAPPING
+# =============================================================================
+
+def map_digits_to_frequencies(digits, frequencies):
     """
-    Play a sequence of frequencies as sine waves with smooth crossfade transitions.
+    Maps single digits (0-9) to frequencies.
 
     Parameters:
-    frequencies (list): List of frequencies in Hz to play
-    duration (float): Duration of each tone in seconds
-    amplitude (float): Volume of the tone (0.0 to 1.0)
-    sample_rate (int): Audio sample rate in Hz
-    crossfade (float): Crossfade duration in seconds between notes (default: 0.05s)
+    digits (list): List of digits 0-9
+    frequencies (list): List of 10 frequencies
+
+    Returns:
+    list: List of frequencies corresponding to each digit
+    """
+    return [frequencies[d] for d in digits]
+
+
+def map_digit_pairs_to_frequencies(digit_pairs, frequencies):
+    """
+    Maps digit pairs (0-99) to frequencies.
+
+    Parameters:
+    digit_pairs (list): List of values 0-99
+    frequencies (list): List of 100 frequencies
+
+    Returns:
+    list: List of frequencies corresponding to each digit pair
+    """
+    return [frequencies[dp] for dp in digit_pairs]
+
+
+# =============================================================================
+# AUDIO PLAYBACK
+# =============================================================================
+
+def generate_audio(frequencies, duration=0.2, amplitude=0.3, sample_rate=44100, crossfade=0.05):
+    """
+    Generate audio buffer from a sequence of frequencies.
+    Returns the audio array without playing it.
     """
     if len(frequencies) == 0:
-        return
+        return np.array([], dtype=np.float32)
 
-    # Calculate samples per note and crossfade
     samples_per_note = int(sample_rate * duration)
     crossfade_samples = int(sample_rate * crossfade)
-
-    # Ensure crossfade isn't longer than the note
     crossfade_samples = min(crossfade_samples, samples_per_note // 2)
 
-    # Calculate total length: each note contributes (duration - crossfade) except the first
-    # First note: full duration, subsequent notes overlap by crossfade amount
     total_samples = samples_per_note + (len(frequencies) - 1) * (samples_per_note - crossfade_samples)
     audio = np.zeros(total_samples, dtype=np.float32)
 
-    # Create crossfade curves using cosine for smooth transitions
     fade_out = np.cos(np.linspace(0, np.pi/2, crossfade_samples)) ** 2
     fade_in = np.sin(np.linspace(0, np.pi/2, crossfade_samples)) ** 2
 
-    # Generate and blend each note
     current_pos = 0
     for i, freq in enumerate(frequencies):
-        # Create time array for this note
         t = np.linspace(0, duration, samples_per_note, False)
-
-        # Generate sine wave
         tone = amplitude * np.sin(2 * np.pi * freq * t)
 
-        # For all notes except the first, apply crossfade
         if i > 0:
-            # Apply fade-in to beginning of current note
             tone[:crossfade_samples] *= fade_in
-            # Apply fade-out to end of previous note (already in buffer)
             audio[current_pos:current_pos + crossfade_samples] *= fade_out
 
-        # Add the current tone to the buffer
         audio[current_pos:current_pos + samples_per_note] += tone
 
-        # Move position for next note (overlap by crossfade amount)
         if i < len(frequencies) - 1:
             current_pos += samples_per_note - crossfade_samples
         else:
             current_pos += samples_per_note
 
-    # Play the entire sequence as one continuous audio stream
+    return audio
+
+
+def play_audio(audio, sample_rate=44100):
+    """Play an audio buffer."""
     sd.play(audio, sample_rate)
     sd.wait()
 
 
+def play_frequencies(frequencies, duration=0.2, amplitude=0.3, sample_rate=44100, crossfade=0.05):
+    """Generate and play a sequence of frequencies."""
+    audio = generate_audio(frequencies, duration, amplitude, sample_rate, crossfade)
+    play_audio(audio, sample_rate)
+    return audio
+
+
+# =============================================================================
+# VISUALIZATION
+# =============================================================================
+
+def plot_spectrogram(audio, sample_rate=44100, title="Spectrogram", save_path=None):
+    """
+    Generate and display a spectrogram of the audio.
+
+    Parameters:
+    audio (np.array): Audio data
+    sample_rate (int): Sample rate in Hz
+    title (str): Plot title
+    save_path (str): Optional path to save the figure
+    """
+    if not VISUALIZATION_AVAILABLE:
+        print("Visualization not available. Install matplotlib and scipy:")
+        print("  pip install matplotlib scipy")
+        return
+
+    plt.figure(figsize=(12, 4))
+
+    # Compute spectrogram
+    f, t, Sxx = signal.spectrogram(audio, sample_rate, nperseg=1024, noverlap=512)
+
+    # Plot
+    plt.pcolormesh(t, f, 10 * np.log10(Sxx + 1e-10), shading='gouraud', cmap='viridis')
+    plt.ylabel('Frequency (Hz)')
+    plt.xlabel('Time (s)')
+    plt.title(title)
+    plt.colorbar(label='Power (dB)')
+    plt.ylim(0, 3000)  # Focus on audible range
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Saved spectrogram to: {save_path}")
+
+    plt.show()
+
+
+def plot_comparison(audio1, audio2, label1, label2, sample_rate=44100, save_path=None):
+    """
+    Plot spectrograms of two audio sequences side by side for comparison.
+    """
+    if not VISUALIZATION_AVAILABLE:
+        print("Visualization not available. Install matplotlib and scipy:")
+        print("  pip install matplotlib scipy")
+        return
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8))
+
+    for ax, audio, label in [(axes[0], audio1, label1), (axes[1], audio2, label2)]:
+        f, t, Sxx = signal.spectrogram(audio, sample_rate, nperseg=1024, noverlap=512)
+        ax.pcolormesh(t, f, 10 * np.log10(Sxx + 1e-10), shading='gouraud', cmap='viridis')
+        ax.set_ylabel('Frequency (Hz)')
+        ax.set_xlabel('Time (s)')
+        ax.set_title(f'Spectrogram: {label}')
+        ax.set_ylim(0, 3000)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Saved comparison to: {save_path}")
+
+    plt.show()
+
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
 if __name__ == "__main__":
-    # ========== CONFIGURATION ==========
-    # Choose a preset or customize your own parameters:
+    # =========================================================================
+    # CONFIGURATION
+    # =========================================================================
 
-    # PRESETS for comparing pi vs e - Uncomment ONE preset:
-    # Each preset optimizes for different listening experiences
+    # Choose frequency mapping mode:
+    # 'equal_temperament' - Original 10-step octave division
+    # 'harmonic_series'   - Natural harmonics (recommended for emergent tones)
+    # 'continuous'        - 100 frequencies for digit pairs (00-99)
+    frequency_mode = 'continuous'
 
-    # Preset 1: "MELODIC PATTERNS" - Best for hearing note sequences clearly
-    # Slow enough to mentally track patterns, short enough to remember
-    # num_digits = 30
-    # note_duration = 0.35
-    # crossfade_time = 0.08
-    # pause_duration = 3.0
+    # Choose irrational constants to compare:
+    # Options: 'pi', 'e', 'sqrt2', 'root12_2', 'phi', 'sqrt3', 'ln2'
+    constant1 = 'pi'
+    constant2 = 'e'
 
-    # Preset 2: "CONVERSATIONAL PACE" - Natural speaking rhythm
-    # Good balance between speed and clarity
-    # num_digits = 50
-    # note_duration = 0.25
-    # crossfade_time = 0.06
-    # pause_duration = 3.0
+    # Playback settings
+    num_digits = 50             # Number of digits (or digit pairs if using 'continuous')
+    note_duration = 0.08        # Seconds per note (try 0.02-0.05 for emergent tones)
+    crossfade_time = 0.02       # Crossfade overlap
+    volume = 0.3                # Volume (0.0 to 1.0)
+    pause_duration = 3.0        # Pause between sequences
 
-    # Preset 3: "RHYTHMIC TEXTURE" - Patterns emerge as rhythm vs melody
-    # Fast enough that you hear statistical "texture" differences
-    # num_digits = 100
-    # note_duration = 0.12
-    # crossfade_time = 0.03
-    # pause_duration = 2.5
+    # Visualization
+    show_spectrograms = True    # Set to True to display spectrograms
 
-    # Preset 4: "CONTEMPLATIVE" - Slow, meditative, each note deliberate
-    # Best for focusing on individual transitions and intervals
-    # num_digits = 40
-    # note_duration = 0.6
-    # crossfade_time = 0.15
-    # pause_duration = 4.0
+    # =========================================================================
+    # SETUP
+    # =========================================================================
 
-    # Preset 5: "STATISTICAL STREAM" - Very fast, hear aggregate patterns
-    # Differences emerge as overall "color" or density
-    # num_digits = 200
-    # note_duration = 0.025
-    # crossfade_time = 0.02
-    # pause_duration = 2.0
+    print("\n" + "=" * 60)
+    print("IRRATIONAL NUMBER SONIFICATION")
+    print("=" * 60)
+    print(f"Frequency Mode: {frequency_mode}")
+    print(f"Constants: {constant1} vs {constant2}")
+    print(f"Digits: {num_digits}, Duration: {note_duration}s/note")
+    print("=" * 60)
 
-    # CUSTOM - Or define your own:
-    # num_digits = 50
-    # note_duration = 0.2
-    # crossfade_time = 0.075
-    # pause_duration = 3.0
+    # Generate frequencies based on mode
+    if frequency_mode == 'harmonic_series':
+        freqs = calculate_frequencies_harmonic_series(base_freq=220, num_harmonics=10)
+        print(f"\nHarmonic series frequencies (base=220Hz):")
+        for i, f in enumerate(freqs):
+            print(f"  {i} -> {f:.0f} Hz (harmonic {i+1})")
+        use_pairs = False
+    elif frequency_mode == 'continuous':
+        freqs = calculate_frequencies_continuous(min_freq=110, max_freq=880, num_values=100)
+        print(f"\nContinuous frequency mapping: 110Hz (00) to 880Hz (99)")
+        use_pairs = True
+    else:  # equal_temperament
+        freqs = calculate_frequencies_equal_temperament(start_freq=440, num_steps=10, num_octaves=1)
+        print(f"\nEqual temperament frequencies (440Hz base):")
+        for i, f in enumerate(freqs[:10]):
+            print(f"  {i} -> {f:.0f} Hz")
+        use_pairs = False
 
-    volume = 0.3                # Volume/amplitude (0.0 to 1.0)
+    # =========================================================================
+    # PLAY FIRST CONSTANT
+    # =========================================================================
 
-    # ===================================
+    print("\n" + "=" * 60)
+    name1, _, approx1 = IRRATIONAL_CONSTANTS[constant1]
+    print(f"Playing: {name1} ({approx1})")
+    print("=" * 60)
 
-    print("\n" + "=" * 50)
-    print(f"CONFIGURATION: {num_digits} digits, {note_duration}s/note")
-    print(f"Crossfade: {crossfade_time}s, Pause: {pause_duration}s")
-    print("=" * 50)
+    if use_pairs:
+        digits1 = get_irrational_digit_pairs(constant1, num_digits)
+        print(f"First {num_digits} digit pairs: {digits1[:20]}...")
+    else:
+        digits1 = get_irrational_digits(constant1, num_digits)
+        print(f"First {num_digits} digits: {digits1}")
 
-    # Generate frequency scale (10 steps from A4)
-    freqs = calculate_frequencies(start_freq=440, num_steps=10, num_octaves=1, precision=2)
+    if use_pairs:
+        freqs1 = map_digit_pairs_to_frequencies(digits1, freqs)
+    else:
+        freqs1 = map_digits_to_frequencies(digits1, freqs)
 
-    # Map digits 0-9 to frequencies
-    freq_mapping = map_numbers_to_frequencies(list(range(10)), freqs)
-
-    # Play pi first
-    print("=" * 50)
-    pi_digits = get_irrational_digits('pi', num_digits)
-    print(f"First {num_digits} digits of pi: {pi_digits}")
-    pi_frequencies = [freq_mapping[digit] for digit in pi_digits]
-    print(f"Playing pi sequence ({note_duration}s per note)...")
-    play_frequencies(pi_frequencies, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
-    print("Done with pi!")
+    print(f"Playing {constant1} sequence...")
+    audio1 = play_frequencies(freqs1, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
+    print(f"Done with {constant1}!")
 
     # Pause
     print(f"\nPausing for {pause_duration} seconds...\n")
     sd.sleep(int(pause_duration * 1000))
 
-    # Play e second
-    print("=" * 50)
-    e_digits = get_irrational_digits('e', num_digits)
-    print(f"First {num_digits} digits of e: {e_digits}")
-    e_frequencies = [freq_mapping[digit] for digit in e_digits]
-    print(f"Playing e sequence ({note_duration}s per note)...")
-    play_frequencies(e_frequencies, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
-    print("Done with e!")
+    # =========================================================================
+    # PLAY SECOND CONSTANT
+    # =========================================================================
 
-    print("\n" + "=" * 50)
+    print("=" * 60)
+    name2, _, approx2 = IRRATIONAL_CONSTANTS[constant2]
+    print(f"Playing: {name2} ({approx2})")
+    print("=" * 60)
+
+    if use_pairs:
+        digits2 = get_irrational_digit_pairs(constant2, num_digits)
+        print(f"First {num_digits} digit pairs: {digits2[:20]}...")
+    else:
+        digits2 = get_irrational_digits(constant2, num_digits)
+        print(f"First {num_digits} digits: {digits2}")
+
+    if use_pairs:
+        freqs2 = map_digit_pairs_to_frequencies(digits2, freqs)
+    else:
+        freqs2 = map_digits_to_frequencies(digits2, freqs)
+
+    print(f"Playing {constant2} sequence...")
+    audio2 = play_frequencies(freqs2, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
+    print(f"Done with {constant2}!")
+
+    print("\n" + "=" * 60)
     print("All sequences complete!")
+    print("=" * 60)
 
+    # =========================================================================
+    # VISUALIZATION
+    # =========================================================================
+
+    if show_spectrograms and VISUALIZATION_AVAILABLE:
+        print("\nGenerating spectrograms...")
+        plot_comparison(audio1, audio2, f"{name1}", f"{name2}")
+    elif show_spectrograms:
+        print("\nTo enable visualization, install: pip install matplotlib scipy")

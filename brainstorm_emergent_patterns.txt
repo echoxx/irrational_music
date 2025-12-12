@@ -1,0 +1,277 @@
+BRAINSTORMING: Emergent Patterns in Irrational Number Sonification
+===================================================================
+Date: December 2024
+
+ORIGINAL VISION
+---------------
+The idea was that playing the digits fast enough might reveal emergent
+structure - like:
+- Individual movie frames becoming smooth motion at 24fps
+- Rapidly alternating notes creating perceived "chords"
+- A spinning color wheel blending into a new color
+
+The hope: if pi's digit sequence has some deep mathematical structure,
+playing it fast enough might reveal that as an emergent tone, timbre,
+or "color."
+
+
+WHY IT SOUNDS LIKE WHITE NOISE INSTEAD
+--------------------------------------
+The problem: pi and e's digits are believed to be statistically random
+(each digit 0-9 appears roughly equally). So at high speed, you're
+essentially playing random frequencies → noise.
+
+It's like spinning a wheel with 10 random colors - you just get gray,
+not a meaningful blend.
+
+
+BRAINSTORMING: WAYS TO REVEAL HIDDEN STRUCTURE
+----------------------------------------------
+
+1. POLYPHONIC/ADDITIVE SYNTHESIS
+   Instead of playing notes sequentially, stack them:
+   - Play digits 1-10 simultaneously as a chord
+   - Then digits 2-11, then 3-12...
+   - The chord "evolves" through pi's sequence
+   - This might reveal harmonic "centers" or textures
+
+2. HARMONIC MAPPING (NOT EQUAL TEMPERAMENT)
+   Current: digits map to arbitrary frequency steps
+   Alternative: map digits to harmonic series relationships:
+   - 0 → fundamental (1:1)
+   - 1 → octave (2:1)
+   - 2 → fifth (3:2)
+   - etc.
+   This could make sequences "consonant" vs "dissonant"
+
+3. WINDOWED AVERAGING
+   Instead of individual digits, use running averages:
+   - Average of digits 1-5 → note 1
+   - Average of digits 2-6 → note 2
+   - This "smooths" the randomness, revealing slower trends
+
+4. DIGIT GROUPING
+   Treat pairs/triples as single numbers:
+   - "31" "41" "59" "26" instead of 3,1,4,1,5,9...
+   - Creates 100 possible values instead of 10
+   - Might reveal patterns at different "scales"
+
+5. FREQUENCY MODULATION
+   Use digits to modulate a carrier wave rather than set pitch directly:
+   - Base tone at 440Hz
+   - Digits control vibrato depth/speed
+   - The "color" emerges from modulation patterns
+
+6. SPECTROGRAM ANALYSIS
+   Before listening - visualize the frequency content:
+   - Generate the audio, render as spectrogram
+   - Look for patterns visually that we might not hear
+
+
+QUESTIONS TO CONSIDER
+---------------------
+Which approach resonates most with the original intuition?
+
+A) A single emergent tone/pitch emerging from the blur
+B) A textural "color" or timbre that's distinct for pi vs e
+C) Harmonic patterns or chord progressions revealing themselves
+D) Something else entirely?
+
+The answer will determine which experiment to implement first.
+
+DECISION: Expecting A) emergent tone or B) textural color
+
+
+=====================================================================
+DETAILED EXPLORATION: HARMONIC MAPPING & DIGIT GROUPING
+=====================================================================
+
+HARMONIC MAPPING - FULL OPTIONS
+-------------------------------
+
+Option A: NATURAL HARMONIC SERIES (SELECTED)
+All tones are overtones of the same fundamental, so they naturally "blend":
+
+Digit → Harmonic → Frequency (if base=220Hz)
+0 → 1st harmonic → 220 Hz  (fundamental)
+1 → 2nd harmonic → 440 Hz  (octave)
+2 → 3rd harmonic → 660 Hz  (octave + fifth)
+3 → 4th harmonic → 880 Hz  (2 octaves)
+4 → 5th harmonic → 1100 Hz (2 oct + major 3rd)
+5 → 6th harmonic → 1320 Hz (2 oct + fifth)
+6 → 7th harmonic → 1540 Hz (slightly flat minor 7th)
+7 → 8th harmonic → 1760 Hz (3 octaves)
+8 → 9th harmonic → 1980 Hz (3 oct + major 2nd)
+9 → 10th harmonic → 2200 Hz (3 oct + major 3rd)
+
+Advantage: All frequencies are mathematically related - rapid playback
+might create a complex but coherent timbre rather than noise.
+
+Option B: Just Intonation Intervals (within one octave)
+Digit → Interval      → Ratio  → Frequency
+0     → Unison        → 1/1    → 440 Hz
+1     → Minor 2nd     → 16/15  → 469 Hz
+2     → Major 2nd     → 9/8    → 495 Hz
+3     → Minor 3rd     → 6/5    → 528 Hz
+4     → Major 3rd     → 5/4    → 550 Hz
+5     → Perfect 4th   → 4/3    → 587 Hz
+6     → Tritone       → 7/5    → 616 Hz
+7     → Perfect 5th   → 3/2    → 660 Hz
+8     → Minor 6th     → 8/5    → 704 Hz
+9     → Major 6th     → 5/3    → 733 Hz
+
+Option C: Pentatonic (only 5 consonant notes)
+0,1 → C (do)
+2,3 → D (re)
+4,5 → E (mi)
+6,7 → G (sol)
+8,9 → A (la)
+
+
+DIGIT GROUPING - MAPPING 00-99
+------------------------------
+
+Option A: Chromatic Across Octaves
+00-11 → Octave 1 (C1 to B1)
+12-23 → Octave 2 (C2 to B2)
+24-35 → Octave 3
+...
+96-99 → Top of range
+Maps to ~8 octaves of piano range.
+
+Option B: Modular (Pitch Class + Octave)
+digit_pair % 12 = pitch class (C, C#, D, etc.)
+digit_pair // 12 = octave
+So: 00=C0, 01=C#0, 12=C1, 25=C#2, 59=B4, etc.
+
+Option C: CONTINUOUS FREQUENCY MAPPING
+frequency = min_freq + (digit_pair / 99) * (max_freq - min_freq)
+00 → 110 Hz
+50 → ~330 Hz
+99 → 880 Hz
+Smooth gradient across 3 octaves.
+
+
+USER DECISIONS
+--------------
+1. Harmonic Mapping: YES to Option A (Natural Harmonic Series)
+   - Appeals for the "emergent tone" goal
+   - Mathematical relationships might create coherent blending
+
+2. Digit Grouping: Prefers UNIQUE PITCH per number
+   - Not discrete chromatic octaves
+   - Continuous frequency mapping (Option C) fits this
+   - Each of 100 values (00-99) gets its own distinct frequency
+
+3. Irrational Numbers to Explore (in order):
+   - √2 (square root of 2) = 1.41421356...
+   - 12th root of 2 = 1.05946309... (the semitone ratio!)
+   - Then experiment with others:
+     * φ (Golden Ratio) = 1.61803398...
+     * √3, √5
+     * ln(2) = 0.69314718...
+     * Euler-Mascheroni constant γ = 0.57721566...
+
+
+VISUALIZATION
+-------------
+User interested in plotting/visualizing the frequency content
+- Spectrograms to see patterns visually
+- Compare visual patterns between different irrational numbers
+- May reveal structure that's hard to hear
+
+
+NEXT STEPS
+----------
+1. Implement harmonic series mapping (Option A)
+2. Add √2 and 12th root of 2 to irrational number options
+3. Try continuous frequency mapping for digit pairs
+4. Add spectrogram visualization
+5. Experiment and iterate
+
+
+=====================================================================
+IMPLEMENTATION COMPLETE - HOW TO RUN EXPERIMENTS
+=====================================================================
+
+QUICK START
+-----------
+Run with: ./run.sh (or /mnt/e/anaconda3/python.exe irrational.py)
+
+
+CONFIGURATION OPTIONS (lines 364-383 in irrational.py)
+-------------------------------------------------------
+
+1. FREQUENCY MAPPING MODE (frequency_mode)
+
+   frequency_mode = 'harmonic_series'   # For emergent tone experiments (RECOMMENDED)
+   frequency_mode = 'equal_temperament' # Original 10-step octave
+   frequency_mode = 'continuous'        # 100 unique frequencies for digit pairs
+
+
+2. IRRATIONAL CONSTANTS (constant1, constant2)
+
+   Available options:
+   'pi'        # 3.14159...
+   'e'         # 2.71828...
+   'sqrt2'     # 1.41421... (square root of 2)
+   'root12_2'  # 1.05946... (semitone ratio!)
+   'phi'       # 1.61803... (golden ratio)
+   'sqrt3'     # 1.73205...
+   'ln2'       # 0.69314...
+
+
+3. SPEED SETTINGS FOR EMERGENT TONES
+
+   # Try these for "blending" effect:
+   note_duration = 0.02    # Very fast - tones blur together
+   note_duration = 0.05    # Fast - beginning to blend
+   note_duration = 0.15    # Medium - individual notes still clear
+
+   crossfade_time = 0.01   # Minimal overlap
+   crossfade_time = 0.03   # Some blending
+
+
+RECOMMENDED EXPERIMENTS
+-----------------------
+
+Experiment 1: Emergent Tone Test (Harmonic Series)
+   frequency_mode = 'harmonic_series'
+   constant1 = 'pi'
+   constant2 = 'sqrt2'
+   num_digits = 100
+   note_duration = 0.03    # Very fast
+   crossfade_time = 0.02
+
+Experiment 2: Compare Musical Constants
+   frequency_mode = 'harmonic_series'
+   constant1 = 'root12_2'  # The semitone ratio itself!
+   constant2 = 'phi'       # Golden ratio
+   num_digits = 50
+   note_duration = 0.1
+
+Experiment 3: Fine-Grained (Digit Pairs)
+   frequency_mode = 'continuous'  # Uses pairs like "31", "41", "59"...
+   constant1 = 'pi'
+   constant2 = 'e'
+   num_digits = 50            # 50 digit pairs = 100 digits
+   note_duration = 0.08
+
+
+VISUALIZATION
+-------------
+To enable spectrograms:
+   pip install matplotlib scipy
+
+Then set show_spectrograms = True in the config. After playback, you'll
+see side-by-side spectrograms comparing the two constants.
+
+
+WHY HARMONIC SERIES SHOULD HELP
+-------------------------------
+The harmonic series mode should give a much better chance of hearing
+emergent tones since all the frequencies are mathematically related
+(integer multiples of 220Hz). When played rapidly, they should blend
+into a complex but coherent timbre rather than noise.
+
+Try the very fast settings first!

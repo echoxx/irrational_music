@@ -50,6 +50,44 @@ def get_pi(n):
     return [int(d) for d in pi_digits]
 
 
+def get_e(n):
+    """
+    Returns the first n decimal places of e (Euler's number) using mpmath for high precision.
+
+    Parameters:
+    n (int): Number of decimal places desired
+
+    Returns:
+    list: List of integers representing each decimal place of e
+    """
+    mp.dps = n + 10  # Set precision with some buffer
+    e_str = str(mp.e)
+
+    # Remove the decimal point and take first n+1 digits (including the 2)
+    e_digits = e_str.replace(".", "")[:n+1]
+
+    return [int(d) for d in e_digits]
+
+
+def get_irrational_digits(constant, n):
+    """
+    Returns the first n decimal places of the specified irrational constant.
+
+    Parameters:
+    constant (str): Either 'pi' or 'e'
+    n (int): Number of decimal places desired
+
+    Returns:
+    list: List of integers representing each decimal place
+    """
+    if constant.lower() == 'pi':
+        return get_pi(n)
+    elif constant.lower() == 'e':
+        return get_e(n)
+    else:
+        raise ValueError(f"Unknown constant '{constant}'. Choose 'pi' or 'e'.")
+
+
 def map_numbers_to_frequencies(numbers, frequencies):
     """
     Maps single digits to frequency indices.
@@ -130,21 +168,33 @@ def play_frequencies(frequencies, duration=0.2, amplitude=0.3, sample_rate=44100
 
 
 if __name__ == "__main__":
+    # ========== CONFIGURATION ==========
+    # Adjust these parameters to customize playback:
+
+    irrational_constant = 'pi'  # Choose: 'pi' or 'e'
+    num_digits = 500             # How many digits to play (e.g., 10, 50, 100, 1000)
+    note_duration = 0.02         # Duration of each note in seconds (lower = faster)
+                                # Try: 0.05 (very fast), 0.1 (fast), 0.2 (medium), 0.5 (slow)
+    volume = 0.3                # Volume/amplitude (0.0 to 1.0)
+    crossfade_time = 0.05      # Crossfade overlap in seconds (smoother transitions)
+
+    # ===================================
+
     # Generate frequency scale (10 steps from A4)
     freqs = calculate_frequencies(start_freq=440, num_steps=10, num_octaves=1, precision=2)
 
-    # Get first 50 decimal places of pi
-    pi_digits = get_pi(50)
-    print(f"First 50 digits of pi: {pi_digits}")
+    # Get digits of the selected irrational constant
+    digits = get_irrational_digits(irrational_constant, num_digits)
+    print(f"First {num_digits} digits of {irrational_constant}: {digits}")
 
     # Map digits 0-9 to frequencies
     freq_mapping = map_numbers_to_frequencies(list(range(10)), freqs)
 
-    # Convert pi digits to frequencies
-    pi_frequencies = [freq_mapping[digit] for digit in pi_digits]
+    # Convert digits to frequencies
+    digit_frequencies = [freq_mapping[digit] for digit in digits]
 
     # Play the sequence with smooth crossfade transitions
-    print("Playing pi sequence...")
-    play_frequencies(pi_frequencies, duration=0.2, amplitude=0.3, crossfade=0.075)
+    print(f"Playing {irrational_constant} sequence ({note_duration}s per note)...")
+    play_frequencies(digit_frequencies, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
     print("Done!")
 

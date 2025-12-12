@@ -169,32 +169,89 @@ def play_frequencies(frequencies, duration=0.2, amplitude=0.3, sample_rate=44100
 
 if __name__ == "__main__":
     # ========== CONFIGURATION ==========
-    # Adjust these parameters to customize playback:
+    # Choose a preset or customize your own parameters:
 
-    irrational_constant = 'pi'  # Choose: 'pi' or 'e'
-    num_digits = 500             # How many digits to play (e.g., 10, 50, 100, 1000)
-    note_duration = 0.02         # Duration of each note in seconds (lower = faster)
-                                # Try: 0.05 (very fast), 0.1 (fast), 0.2 (medium), 0.5 (slow)
+    # PRESETS for comparing pi vs e - Uncomment ONE preset:
+    # Each preset optimizes for different listening experiences
+
+    # Preset 1: "MELODIC PATTERNS" - Best for hearing note sequences clearly
+    # Slow enough to mentally track patterns, short enough to remember
+    # num_digits = 30
+    # note_duration = 0.35
+    # crossfade_time = 0.08
+    # pause_duration = 3.0
+
+    # Preset 2: "CONVERSATIONAL PACE" - Natural speaking rhythm
+    # Good balance between speed and clarity
+    # num_digits = 50
+    # note_duration = 0.25
+    # crossfade_time = 0.06
+    # pause_duration = 3.0
+
+    # Preset 3: "RHYTHMIC TEXTURE" - Patterns emerge as rhythm vs melody
+    # Fast enough that you hear statistical "texture" differences
+    # num_digits = 100
+    # note_duration = 0.12
+    # crossfade_time = 0.03
+    # pause_duration = 2.5
+
+    # Preset 4: "CONTEMPLATIVE" - Slow, meditative, each note deliberate
+    # Best for focusing on individual transitions and intervals
+    # num_digits = 40
+    # note_duration = 0.6
+    # crossfade_time = 0.15
+    # pause_duration = 4.0
+
+    # Preset 5: "STATISTICAL STREAM" - Very fast, hear aggregate patterns
+    # Differences emerge as overall "color" or density
+    # num_digits = 200
+    # note_duration = 0.025
+    # crossfade_time = 0.02
+    # pause_duration = 2.0
+
+    # CUSTOM - Or define your own:
+    # num_digits = 50
+    # note_duration = 0.2
+    # crossfade_time = 0.075
+    # pause_duration = 3.0
+
     volume = 0.3                # Volume/amplitude (0.0 to 1.0)
-    crossfade_time = 0.05      # Crossfade overlap in seconds (smoother transitions)
 
     # ===================================
+
+    print("\n" + "=" * 50)
+    print(f"CONFIGURATION: {num_digits} digits, {note_duration}s/note")
+    print(f"Crossfade: {crossfade_time}s, Pause: {pause_duration}s")
+    print("=" * 50)
 
     # Generate frequency scale (10 steps from A4)
     freqs = calculate_frequencies(start_freq=440, num_steps=10, num_octaves=1, precision=2)
 
-    # Get digits of the selected irrational constant
-    digits = get_irrational_digits(irrational_constant, num_digits)
-    print(f"First {num_digits} digits of {irrational_constant}: {digits}")
-
     # Map digits 0-9 to frequencies
     freq_mapping = map_numbers_to_frequencies(list(range(10)), freqs)
 
-    # Convert digits to frequencies
-    digit_frequencies = [freq_mapping[digit] for digit in digits]
+    # Play pi first
+    print("=" * 50)
+    pi_digits = get_irrational_digits('pi', num_digits)
+    print(f"First {num_digits} digits of pi: {pi_digits}")
+    pi_frequencies = [freq_mapping[digit] for digit in pi_digits]
+    print(f"Playing pi sequence ({note_duration}s per note)...")
+    play_frequencies(pi_frequencies, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
+    print("Done with pi!")
 
-    # Play the sequence with smooth crossfade transitions
-    print(f"Playing {irrational_constant} sequence ({note_duration}s per note)...")
-    play_frequencies(digit_frequencies, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
-    print("Done!")
+    # Pause
+    print(f"\nPausing for {pause_duration} seconds...\n")
+    sd.sleep(int(pause_duration * 1000))
+
+    # Play e second
+    print("=" * 50)
+    e_digits = get_irrational_digits('e', num_digits)
+    print(f"First {num_digits} digits of e: {e_digits}")
+    e_frequencies = [freq_mapping[digit] for digit in e_digits]
+    print(f"Playing e sequence ({note_duration}s per note)...")
+    play_frequencies(e_frequencies, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
+    print("Done with e!")
+
+    print("\n" + "=" * 50)
+    print("All sequences complete!")
 

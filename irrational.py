@@ -367,15 +367,17 @@ if __name__ == "__main__":
     # 'continuous'        - 100 frequencies for digit pairs (00-99)
     frequency_mode = 'harmonic_series'
 
-    # Choose irrational constants to compare:
+    # Choose irrational constants to compare (up to 5):
     # Options: 'pi', 'e', 'sqrt2', 'root12_2', 'phi', 'sqrt3', 'ln2'
-    constant1 = 'sqrt3'
-    constant2 = 'phi'
+    # Add or remove constants from this list as desired
+    constants_to_play = ['pi', 'e', 'phi', 'sqrt2', 'ln2']
+
+
 
     # Playback settings
-    num_digits = 50             # Number of digits (or digit pairs if using 'continuous')
-    note_duration = 0.08        # Seconds per note (try 0.02-0.05 for emergent tones)
-    crossfade_time = 0.02       # Crossfade overlap
+    num_digits = 100             # Number of digits (or digit pairs if using 'continuous')
+    note_duration = 0.05        # Seconds per note (try 0.02-0.05 for emergent tones)
+    crossfade_time = 0.01       # Crossfade overlap
     volume = 0.3                # Volume (0.0 to 1.0)
     pause_duration = 3.0        # Pause between sequences
 
@@ -390,7 +392,7 @@ if __name__ == "__main__":
     print("IRRATIONAL NUMBER SONIFICATION")
     print("=" * 60)
     print(f"Frequency Mode: {frequency_mode}")
-    print(f"Constants: {constant1} vs {constant2}")
+    print(f"Constants ({len(constants_to_play)}): {', '.join(constants_to_play)}")
     print(f"Digits: {num_digits}, Duration: {note_duration}s/note")
     print("=" * 60)
 
@@ -413,69 +415,95 @@ if __name__ == "__main__":
         use_pairs = False
 
     # =========================================================================
-    # PLAY FIRST CONSTANT
+    # GENERATE ALL AUDIO AND DISPLAY SPECTROGRAMS
     # =========================================================================
+
+    # Use the configured constants
+    all_audio = []
+    all_names = []
 
     print("\n" + "=" * 60)
-    name1, _, approx1 = IRRATIONAL_CONSTANTS[constant1]
-    print(f"Playing: {name1} ({approx1})")
+    print("GENERATING AUDIO FOR ALL CONSTANTS")
     print("=" * 60)
 
-    if use_pairs:
-        digits1 = get_irrational_digit_pairs(constant1, num_digits)
-        print(f"First {num_digits} digit pairs: {digits1[:20]}...")
-    else:
-        digits1 = get_irrational_digits(constant1, num_digits)
-        print(f"First {num_digits} digits: {digits1}")
+    for const in constants_to_play:
+        name, _, approx = IRRATIONAL_CONSTANTS[const]
+        all_names.append(name)
 
-    if use_pairs:
-        freqs1 = map_digit_pairs_to_frequencies(digits1, freqs)
-    else:
-        freqs1 = map_digits_to_frequencies(digits1, freqs)
+        print(f"\n{name} ({approx})")
 
-    print(f"Playing {constant1} sequence...")
-    audio1 = play_frequencies(freqs1, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
-    print(f"Done with {constant1}!")
+        if use_pairs:
+            digits = get_irrational_digit_pairs(const, num_digits)
+            print(f"  First {num_digits} digit pairs: {digits[:20]}...")
+        else:
+            digits = get_irrational_digits(const, num_digits)
+            print(f"  First {num_digits} digits: {digits}")
 
-    # Pause
-    print(f"\nPausing for {pause_duration} seconds...\n")
-    sd.sleep(int(pause_duration * 1000))
+        if use_pairs:
+            mapped_freqs = map_digit_pairs_to_frequencies(digits, freqs)
+        else:
+            mapped_freqs = map_digits_to_frequencies(digits, freqs)
+
+        print(f"  Generating audio...")
+        audio = generate_audio(mapped_freqs, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
+        all_audio.append(audio)
+
+    # Display all spectrograms at once (non-blocking)
+    if show_spectrograms and VISUALIZATION_AVAILABLE:
+        print("\n" + "=" * 60)
+        print("DISPLAYING SPECTROGRAMS")
+        print("=" * 60)
+
+        # Create a single figure with subplots stacked vertically (one per constant)
+        num_constants = len(constants_to_play)
+        fig_height = 3 * num_constants  # 3 inches per subplot
+        fig, axes = plt.subplots(num_constants, 1, figsize=(14, fig_height))
+        fig.suptitle('Irrational Number Spectrograms', fontsize=16, fontweight='bold')
+
+        # Ensure axes is always a list (if only 1 constant, axes is not a list)
+        if num_constants == 1:
+            axes = [axes]
+
+        for i, (audio, name, ax) in enumerate(zip(all_audio, all_names, axes)):
+            # Compute spectrogram
+            f, t, Sxx = signal.spectrogram(audio, 44100, nperseg=1024, noverlap=512)
+
+            # Plot
+            im = ax.pcolormesh(t, f, 10 * np.log10(Sxx + 1e-10), shading='gouraud', cmap='viridis')
+            ax.set_ylabel('Frequency (Hz)')
+            ax.set_xlabel('Time (s)')
+            ax.set_title(f'{name}')
+            ax.set_ylim(0, 3000)
+
+            # Add colorbar for each subplot
+            plt.colorbar(im, ax=ax, label='Power (dB)')
+
+            print(f"  Created spectrogram for {name}")
+
+        plt.tight_layout()
+
+        # Show all spectrograms without blocking
+        plt.show(block=False)
+        print("\nAll spectrograms displayed in one window!")
+        print("Waiting 2 seconds before playback...\n")
+        plt.pause(2)
 
     # =========================================================================
-    # PLAY SECOND CONSTANT
+    # PLAY ALL CONSTANTS
     # =========================================================================
 
-    print("=" * 60)
-    name2, _, approx2 = IRRATIONAL_CONSTANTS[constant2]
-    print(f"Playing: {name2} ({approx2})")
-    print("=" * 60)
+    for i, (const, name, audio) in enumerate(zip(constants_to_play, all_names, all_audio)):
+        print("=" * 60)
+        print(f"Playing: {name}")
+        print("=" * 60)
+        play_audio(audio)
+        print(f"Done with {const}!")
 
-    if use_pairs:
-        digits2 = get_irrational_digit_pairs(constant2, num_digits)
-        print(f"First {num_digits} digit pairs: {digits2[:20]}...")
-    else:
-        digits2 = get_irrational_digits(constant2, num_digits)
-        print(f"First {num_digits} digits: {digits2}")
-
-    if use_pairs:
-        freqs2 = map_digit_pairs_to_frequencies(digits2, freqs)
-    else:
-        freqs2 = map_digits_to_frequencies(digits2, freqs)
-
-    print(f"Playing {constant2} sequence...")
-    audio2 = play_frequencies(freqs2, duration=note_duration, amplitude=volume, crossfade=crossfade_time)
-    print(f"Done with {constant2}!")
+        # Pause between constants (but not after the last one)
+        if i < len(constants_to_play) - 1:
+            print(f"\nPausing for {pause_duration} seconds...\n")
+            sd.sleep(int(pause_duration * 1000))
 
     print("\n" + "=" * 60)
     print("All sequences complete!")
     print("=" * 60)
-
-    # =========================================================================
-    # VISUALIZATION
-    # =========================================================================
-
-    if show_spectrograms and VISUALIZATION_AVAILABLE:
-        print("\nGenerating spectrograms...")
-        plot_comparison(audio1, audio2, f"{name1}", f"{name2}")
-    elif show_spectrograms:
-        print("\nTo enable visualization, install: pip install matplotlib scipy")

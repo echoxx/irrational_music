@@ -365,12 +365,12 @@ if __name__ == "__main__":
     # 'equal_temperament' - Original 10-step octave division
     # 'harmonic_series'   - Natural harmonics (recommended for emergent tones)
     # 'continuous'        - 100 frequencies for digit pairs (00-99)
-    frequency_mode = 'continuous'
+    frequency_mode = 'harmonic_series'
 
     # Choose irrational constants to compare:
     # Options: 'pi', 'e', 'sqrt2', 'root12_2', 'phi', 'sqrt3', 'ln2'
-    constant1 = 'pi'
-    constant2 = 'e'
+    constant1 = 'sqrt3'
+    constant2 = 'phi'
 
     # Playback settings
     num_digits = 50             # Number of digits (or digit pairs if using 'continuous')

@@ -61,6 +61,25 @@ def calculate_frequencies_harmonic_series(base_freq=220, num_harmonics=10):
     return [base_freq * (i + 1) for i in range(num_harmonics)]
 
 
+def calculate_frequencies_microtonal(start_freq=220, subdivisions_per_step=2, num_notes=10):
+    """
+    Calculate microtonal frequencies by subdividing each equal-temperament semitone.
+    subdivisions_per_step=2 → quarter-tones (24 steps/octave),
+    =4 → eighth-tones (48 steps/octave), etc.
+
+    Parameters:
+    start_freq (float): Starting frequency in Hz
+    subdivisions_per_step (int): Microtonal steps per semitone (≥1, where 1 = standard 12-tet)
+    num_notes (int): Number of frequencies to generate (default: 10 for digits 0-9)
+
+    Returns:
+    list: Successive microtonal frequencies starting at start_freq
+    """
+    total_steps_per_octave = 12 * subdivisions_per_step
+    step_factor = 2 ** (1.0 / total_steps_per_octave)
+    return [start_freq * (step_factor ** i) for i in range(num_notes)]
+
+
 def calculate_frequencies_continuous(min_freq=110, max_freq=880, num_values=100):
     """
     Calculate frequencies as a continuous gradient for digit pairs (00-99).

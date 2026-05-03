@@ -14,10 +14,24 @@ This project uses Jupyter notebooks as the primary development environment. Depe
 
 Install the following packages:
 ```bash
-pip install numpy sounddevice mpmath scipy
+pip install numpy sounddevice mpmath scipy matplotlib
+```
+
+For the Gradio web UI (`app.py`), additionally install:
+```bash
+pip install gradio
 ```
 
 Note: The project uses Anaconda/Miniconda environment. Some SciPy version warnings may appear but don't affect functionality.
+
+### Running
+
+- CLI playback: `./run.sh` (or `python irrational.py`) — plays the configured constants in sequence and shows spectrograms.
+- Interactive UI: `./run_ui.sh` (or `/mnt/e/anaconda3/python.exe app.py`) — launches a local Gradio server (default `http://127.0.0.1:7860`) with sliders for note duration, base frequency, volume, crossfade, and a switch between harmonic series / equal temperament / continuous (digit pairs) / microtonal modes. The UI offers two playback modes:
+  - **Generate** — synthesizes a fixed buffer, shows the spectrogram, and plays in the browser. Good for sharing or downloading a snippet.
+  - **Start Live / Stop Live** (`live.py`) — opens a `sounddevice.OutputStream` that plays continuously on the **host machine's speakers** while reading parameters from a shared dict. Slider changes are heard within ~50 ms with no restart-from-beginning. Local-only: audio plays where `app.py` runs, not in the browser, so this would not work over a network deployment.
+
+  Note: WSL's `python3` does not have the project's dependencies — the project uses the Windows Anaconda Python at `/mnt/e/anaconda3/python.exe`.
 
 ## Core Architecture
 

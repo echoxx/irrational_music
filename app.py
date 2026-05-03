@@ -23,8 +23,11 @@ from irrational import (
     map_digit_pairs_to_frequencies,
     map_digits_to_frequencies,
 )
+from live import LivePlayer
 
 SAMPLE_RATE = 44100
+
+live_player = LivePlayer()
 
 CONSTANT_CHOICES = [(name, key) for key, (name, _, _) in IRRATIONAL_CONSTANTS.items()]
 MODE_CHOICES = [
@@ -95,6 +98,37 @@ def update_subdivision_visibility(mode):
     return gr.update(visible=(mode == "microtonal"))
 
 
+def start_live(constant, num_digits, mode, base_freq, subdivisions, duration, volume):
+    live_player.set_params(
+        constant=constant,
+        num_digits=int(num_digits),
+        mode=mode,
+        base_freq=float(base_freq),
+        subdivisions=int(subdivisions),
+        duration=float(duration),
+        volume=float(volume),
+    )
+    live_player.refresh_digits()
+    live_player.start()
+    return "Live: running"
+
+
+def stop_live():
+    live_player.stop()
+    return "Live: stopped"
+
+
+def live_set(key, refresh_digits=False):
+    """Build a Gradio change-handler that pushes a single param into the live player."""
+    def handler(value):
+        if not live_player.is_running:
+            return
+        live_player.set_param(key, value)
+        if refresh_digits:
+            live_player.refresh_digits()
+    return handler
+
+
 with gr.Blocks(title="Irrational Sonification") as demo:
     gr.Markdown(
         "# Irrational number sonification\n"
@@ -116,6 +150,15 @@ with gr.Blocks(title="Irrational Sonification") as demo:
             crossfade = gr.Slider(minimum=0.0, maximum=0.05, value=0.01, step=0.001, label="Crossfade (s)")
             volume = gr.Slider(minimum=0.0, maximum=1.0, value=0.3, step=0.01, label="Volume")
             btn = gr.Button("Generate", variant="primary")
+            gr.Markdown(
+                "### Live mode\n"
+                "Plays continuously on the host machine's speakers. "
+                "Drag any slider while running to hear changes immediately."
+            )
+            with gr.Row():
+                start_btn = gr.Button("Start Live", variant="primary")
+                stop_btn = gr.Button("Stop Live")
+            live_status = gr.Markdown("Live: stopped")
         with gr.Column(scale=2):
             audio_out = gr.Audio(label="Audio", type="numpy")
             spec_out = gr.Plot(label="Spectrogram")
@@ -126,6 +169,24 @@ with gr.Blocks(title="Irrational Sonification") as demo:
         inputs=[constant, num_digits, mode, base_freq, subdivisions, duration, crossfade, volume],
         outputs=[audio_out, spec_out],
     )
+
+    start_btn.click(
+        fn=start_live,
+        inputs=[constant, num_digits, mode, base_freq, subdivisions, duration, volume],
+        outputs=live_status,
+    )
+    stop_btn.click(fn=stop_live, outputs=live_status)
+
+    # Live-mode slider/control wiring. `change` fires on every drag tick — fine
+    # because set_param is just a locked dict update. num_digits uses `release`
+    # to avoid re-running mpmath on every intermediate value.
+    constant.change(fn=live_set("constant", refresh_digits=True), inputs=constant)
+    num_digits.release(fn=live_set("num_digits", refresh_digits=True), inputs=num_digits)
+    mode.change(fn=live_set("mode", refresh_digits=True), inputs=mode)
+    base_freq.change(fn=live_set("base_freq"), inputs=base_freq)
+    subdivisions.change(fn=live_set("subdivisions"), inputs=subdivisions)
+    duration.change(fn=live_set("duration"), inputs=duration)
+    volume.change(fn=live_set("volume"), inputs=volume)
 
 
 if __name__ == "__main__":

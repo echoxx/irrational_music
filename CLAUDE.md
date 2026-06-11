@@ -33,6 +33,28 @@ Note: The project uses Anaconda/Miniconda environment. Some SciPy version warnin
 
   Note: WSL's `python3` does not have the project's dependencies — the project uses the Windows Anaconda Python at `/mnt/e/anaconda3/python.exe`.
 
+### Docker sandbox (`./run-sandbox.sh`)
+
+For an isolated environment that **only has access to this folder**, use the Docker sandbox instead of the host Python. The image (`Dockerfile`) is `python:3.11-slim` with the deps from `requirements.txt` plus the PortAudio→ALSA→PulseAudio bridge libs. The source is **not** baked in — only this directory is bind-mounted at `/workspace` at runtime.
+
+```bash
+./run-sandbox.sh                 # interactive bash shell; folder-only, no network, no audio
+./run-sandbox.sh python irrational.py
+./run-sandbox.sh --audio         # + host-speaker audio (see below)
+./run-sandbox.sh --audio python irrational.py   # CLI playback with sound
+./run-sandbox.sh --ui            # Gradio UI: enables network + port 7860 + audio
+./run-sandbox.sh --claude        # launch the Claude Code CLI inside the sandbox (enables network)
+NETWORK=1 ./run-sandbox.sh ...   # enable networking without the UI helper
+AUDIO=1   ./run-sandbox.sh ...   # enable host audio without the --audio flag
+```
+
+Isolation defaults: `--cap-drop ALL`, `--security-opt no-new-privileges`, `--network none`, and only this folder mounted (host drives under `/mnt` are not visible).
+
+- **Audio** is opt-in. WSLg runs a PulseAudio server at `/mnt/wslg/PulseServer` that pipes to the Windows speakers. With `--audio`/`AUDIO=1` the launcher mounts that socket and sets `PULSE_SERVER`; the container's ALSA default routes through it. This is the way to get real playback (incl. `live.py`) from inside the sandbox. Cost: the container can then talk to the host's PulseAudio server, so it's off by default.
+- **Network** is off by default; `--ui`, `--claude`, and `NETWORK=1` enable Docker's bridge network.
+- **Claude Code** is baked into the image (native binary at `/root/.local/bin/claude`, no Node.js). Run it with `./run-sandbox.sh --claude` (which turns on networking, since it must reach `api.anthropic.com`). Authentication: if `ANTHROPIC_API_KEY` is exported, the launcher forwards it (network-only, same policy as the OpenAI key); otherwise it reads `~/.config/irrational/anthropic_api_key` if present. Override the path with `ANTHROPIC_API_KEY_FILE`. Without a key, run `claude` once interactively to log in — but note the container is `--rm`, so that login does not persist between runs.
+- Requires Docker available in WSL (`docker --version`).
+
 ## Core Architecture
 
 ### Main Components
@@ -122,13 +144,13 @@ play_frequencies(
 
 - `irrational.ipynb` - Main development notebook with core functions
 - `2024-12-18_irrational.ipynb` - Latest experimental version
-- `example.py` - Simple OpenAI API test script
+- `example.py` - Simple OpenAI API test script (reads `OPENAI_API_KEY` from the environment)
 - `output.wav` - Generated audio file output
-- `openai_api_key` - API key file (keep secure)
+- `Dockerfile`, `requirements.txt`, `.dockerignore`, `run-sandbox.sh` - Docker sandbox (see "Docker sandbox" above)
 
 ## Security Notes
 
-The repository contains an OpenAI API key file. When working with this project:
-- Never commit API keys to version control
-- Use environment variables or secure key management
-- The existing API key in the notebook cells should be replaced with secure alternatives
+- **OpenAI API key lives outside this folder.** It is stored at `~/.config/irrational/openai_api_key` (perms `600`), not in the project directory, so it is never on the Docker sandbox mount. Code reads it via the standard `OPENAI_API_KEY` environment variable (`OpenAI()` picks it up automatically); the sandbox launcher loads it from that file and injects it as an env var **only when networking is enabled**. Override the path with `OPENAI_API_KEY_FILE`, or just `export OPENAI_API_KEY=...` yourself (the launcher prefers an already-set env var).
+- **Anthropic API key** (for Claude Code in the sandbox) follows the same pattern: stored at `~/.config/irrational/anthropic_api_key` (outside the mount), read into `ANTHROPIC_API_KEY` and forwarded only when networking is enabled. Override with `ANTHROPIC_API_KEY_FILE`.
+- Never commit API keys to version control (`openai_api_key` is in `.gitignore`).
+- Prefer environment variables / secure key management over hardcoded keys in notebook cells.

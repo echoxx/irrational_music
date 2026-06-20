@@ -229,6 +229,15 @@ class LivePlayer:
         self.visual_pos = 0
         self.current_info: dict = {}
 
+        # Performance recording: when active, the callback appends each rendered
+        # post-FX block to _rec_blocks (under self.lock). Concatenation happens
+        # on the UI thread in stop_recording(), never in the callback.
+        self._recording = False
+        self._rec_blocks: list[np.ndarray] = []
+        self._rec_frames = 0
+        self._rec_max_frames = int(self.sample_rate * 60 * 10)  # 10 min soft cap (~210 MB)
+        self._rec_truncated = False
+
         self.stream: sd.OutputStream | None = None
         self.last_callback_error: str | None = None
 
@@ -241,6 +250,49 @@ class LivePlayer:
     def set_params(self, **kwargs) -> None:
         with self.lock:
             self.params.update(kwargs)
+
+    def start_recording(self) -> None:
+        """Begin capturing the live audio stream.
+
+        Self-contained: starts the audio engine if it isn't already running, so
+        Record works as a standalone mode. If Live is already running it just
+        attaches to the existing stream with no gap.
+        """
+        if self.stream is None:
+            self.start()
+        with self.lock:
+            self._rec_blocks = []
+            self._rec_frames = 0
+            self._rec_truncated = False
+            self._recording = True  # set last: callback never sees a half-reset state
+
+    def stop_recording(self):
+        """Stop capturing and return (audio (N,2) float32, seconds, truncated).
+
+        Returns None if nothing was captured. Playback is left running. The
+        expensive concatenate/normalize run here on the UI thread (outside the
+        lock) so the audio callback is never blocked.
+        """
+        with self.lock:
+            self._recording = False
+            blocks = self._rec_blocks
+            self._rec_blocks = []
+            truncated = self._rec_truncated
+        if not blocks:
+            return None
+        audio = np.concatenate(blocks, axis=0)
+        peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+        if peak > 1.0:
+            audio = audio * (0.99 / peak)  # tame clipping; preserve relative dynamics
+        return audio.astype(np.float32), len(audio) / self.sample_rate, truncated
+
+    @property
+    def is_recording(self) -> bool:
+        return self._recording
+
+    def recording_elapsed(self) -> float:
+        with self.lock:
+            return self._rec_frames / self.sample_rate
 
     def refresh_digits(self) -> None:
         """Re-fetch the carrier/modulator/counterpoint digit sequences.
@@ -448,6 +500,17 @@ class LivePlayer:
                     self.visual_buffer[:take - first] = out[first:take]
                 self.visual_pos = (pos + take) % n
                 self.current_info = info
+
+                # ---- recording tap: append the fresh post-FX block (no copy;
+                # `out` is freshly allocated each callback and not mutated after
+                # this point). Concatenation is deferred to stop_recording().
+                if self._recording:
+                    if self._rec_frames < self._rec_max_frames:
+                        self._rec_blocks.append(out)
+                        self._rec_frames += frames
+                    else:
+                        self._recording = False
+                        self._rec_truncated = True
         except Exception:
             # Never let an exception escape into cffi. Fill silence and
             # remember it for diagnostics.

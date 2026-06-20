@@ -17,9 +17,12 @@ The pre-revision interface is preserved in app_classic.py (port 7861).
 import matplotlib
 matplotlib.use("Agg")  # headless backend; Gradio renders the figure
 
+from datetime import datetime
+
 import gradio as gr
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.io import wavfile
 
 from effects import apply_effects_offline
 from irrational import (
@@ -205,7 +208,7 @@ def build_ticker(info):
 
 def visuals_tick(log_freq):
     if not live_player.is_running:
-        return gr.update(), gr.update(), gr.update()
+        return gr.update(), gr.update(), gr.update(), gr.update()
     plt.close("all")
     buf, info = live_player.get_visual_snapshot()
     osc = build_oscilloscope(buf)
@@ -216,7 +219,11 @@ def visuals_tick(log_freq):
     draw_spectrogram(ax, buf[-int(1.5 * SAMPLE_RATE):], SAMPLE_RATE,
                      title="Live (last 1.5 s)", log_freq=log_freq)
     spec_fig.tight_layout()
-    return osc, spec_fig, build_ticker(info)
+    # gr.update() (no-op) when not recording so we don't stomp the post-stop
+    # "Recorded Xs" status message.
+    rec_md = (f"🔴 **Recording… {live_player.recording_elapsed():.1f}s**"
+              if live_player.is_recording else gr.update())
+    return osc, spec_fig, build_ticker(info), rec_md
 
 
 # =============================================================================
@@ -263,6 +270,44 @@ def start_live(*vals):
 def stop_live():
     live_player.stop()
     return "Live: stopped", gr.Timer(active=False)
+
+
+def start_recording(*vals):
+    """Begin a recorded performance (auto-starts the engine if needed)."""
+    params = dict(zip(LIVE_KEYS, vals))
+    params["mod_targets"] = tuple(params.get("mod_targets") or ())
+    live_player.set_params(**params)
+    live_player.refresh_digits()
+    try:
+        live_player.start_recording()
+    except Exception as e:
+        return (f"⚠️ **Could not start recording:** {e}\n\n"
+                "Check that an output device is available on the host machine, "
+                "then try again."), gr.Timer(active=False)
+    return "🔴 **Recording…** (drag controls to perform)", gr.Timer(active=True)
+
+
+def stop_recording():
+    """Finalize the take; playback keeps running. Returns the captured track."""
+    result = live_player.stop_recording()
+    # Visuals timer stays active only while the engine is still playing.
+    timer_update = gr.Timer(active=live_player.is_running)
+    if result is None:
+        return "Recording: nothing captured", gr.update(), timer_update
+
+    audio, secs, truncated = result
+    saved = datetime.now().strftime("performance_%Y%m%d_%H%M%S.wav")
+    try:
+        wavfile.write(saved, SAMPLE_RATE, audio)  # float32; .wav is gitignored
+    except Exception:
+        saved = None  # degrade gracefully — playback still works
+
+    status = f"**Recorded {secs:.1f}s** — playable/downloadable →"
+    if truncated:
+        status += "  \n_(stopped at the 10-minute recording cap)_"
+    if saved:
+        status += f"  \nSaved `{saved}`"
+    return status, (SAMPLE_RATE, audio), timer_update
 
 
 def live_set(key, refresh_digits=False):
@@ -408,10 +453,20 @@ with gr.Blocks(title="Irrational Sonification") as demo:
                 start_btn = gr.Button("Start Live", variant="primary")
                 stop_btn = gr.Button("Stop Live")
             live_status = gr.Markdown("Live: stopped")
+            gr.Markdown(
+                "### Record a performance\n"
+                "Hit Record, then drag controls; the whole take is captured and "
+                "saved as a track. Playback keeps running when you stop."
+            )
+            with gr.Row():
+                record_btn = gr.Button("⏺ Record", variant="primary")
+                stop_record_btn = gr.Button("Stop Record")
+            record_status = gr.Markdown("Recording: idle")
 
         with gr.Column(scale=2):
             audio_out = gr.Audio(label="Audio", type="numpy")
             spec_out = gr.Plot(label="Spectrogram")
+            recording_out = gr.Audio(label="Recorded performance", type="numpy")
             with gr.Accordion("Live visuals (populate while Live mode runs)", open=False):
                 ticker_out = gr.Markdown("*(live digit ticker)*")
                 osc_out = gr.Plot(label="Oscilloscope (live)")
@@ -457,6 +512,10 @@ with gr.Blocks(title="Irrational Sonification") as demo:
     start_btn.click(fn=start_live, inputs=live_inputs, outputs=[live_status, timer])
     stop_btn.click(fn=stop_live, outputs=[live_status, timer])
 
+    record_btn.click(fn=start_recording, inputs=live_inputs, outputs=[record_status, timer])
+    stop_record_btn.click(fn=stop_recording,
+                          outputs=[record_status, recording_out, timer])
+
     # Live-mode control wiring. `change` fires on every drag tick — fine
     # because set_param is just a locked dict update. num_digits uses `release`
     # to avoid re-running mpmath on every intermediate value.
@@ -484,7 +543,7 @@ with gr.Blocks(title="Irrational Sonification") as demo:
 
     # ---------------- live visuals timer wiring
     timer.tick(fn=visuals_tick, inputs=log_freq,
-               outputs=[osc_out, live_spec_out, ticker_out],
+               outputs=[osc_out, live_spec_out, ticker_out, record_status],
                show_progress="hidden")
 
     # Populate the page with one render of the defaults so it doesn't open

@@ -1,10 +1,22 @@
 """Real-time live-playback mode for the irrational sonification UI.
 
 LivePlayer owns a sounddevice.OutputStream whose audio callback synthesizes
-each block on demand from a shared, lock-protected params dict. The Gradio UI
-mutates the dict from the main thread; the audio thread reads a snapshot at
-the top of each callback and produces phase-continuous sine waves so that
-mid-stream parameter changes don't click.
+each stereo block on demand from a shared, lock-protected params dict. The
+Gradio UI mutates the dict from the main thread; the audio thread reads a
+snapshot at the top of each callback.
+
+Feature parity with the Generate path: waveforms/brightness/FM (synth.py),
+ADSR or micro-fade envelopes, chords, cross-modulation by a second constant
+(modulation.py), an independent counterpoint voice, and streaming effects
+(effects.py). Oscillator phases persist across note boundaries per chord
+voice, so parameter changes and note transitions stay click-free; every note
+additionally gets a short envelope (full ADSR, or a ~2 ms micro-fade in
+crossfade mode) because non-sine waveforms aren't phase-aligned at note
+boundaries.
+
+For the live visuals, the callback also appends each rendered block to a
+rolling ~3 s buffer and records which carrier/modulator/counterpoint digits
+are currently sounding; the UI polls get_visual_snapshot() on a timer.
 """
 
 from __future__ import annotations
@@ -14,41 +26,142 @@ import threading
 import numpy as np
 import sounddevice as sd
 
+from effects import EffectChain
 from irrational import (
-    calculate_frequencies_continuous,
-    calculate_frequencies_equal_temperament,
-    calculate_frequencies_harmonic_series,
-    calculate_frequencies_microtonal,
+    build_frequency_table,
     get_irrational_digit_pairs,
     get_irrational_digits,
+    mode_uses_pairs,
 )
+from modulation import apply_modulation
+from synth import adsr_envelope, pan_gains, render_wave
 
 SAMPLE_RATE = 44100
 BLOCK_SIZE = 2048
+VISUAL_SECONDS = 3.0
+MICRO_FADE_S = 0.002  # crossfade-mode per-note fade to avoid waveform clicks
+
+# Kept as module-level aliases so existing imports/callers keep working.
+_mode_uses_pairs = mode_uses_pairs
+_build_freq_table = build_frequency_table
 
 
-def _mode_uses_pairs(mode: str) -> bool:
-    return mode == "continuous"
+class _Voice:
+    """One sequenced voice: walks a digit stream, one enveloped note at a time.
 
+    Oscillator phases are kept per chord-slot and never reset, so frequency
+    changes (new notes, live slider moves) are phase-continuous.
+    """
 
-def _build_freq_table(mode: str, base_freq: float, subdivisions: int) -> list[float]:
-    if mode == "harmonic_series":
-        return calculate_frequencies_harmonic_series(base_freq=base_freq, num_harmonics=10)
-    if mode == "equal_temperament":
-        return calculate_frequencies_equal_temperament(
-            start_freq=base_freq, num_steps=10, num_octaves=1
-        )[:10]
-    if mode == "continuous":
-        return calculate_frequencies_continuous(
-            min_freq=base_freq / 2, max_freq=base_freq * 4, num_values=100
-        )
-    if mode == "microtonal":
-        return calculate_frequencies_microtonal(
-            start_freq=base_freq,
-            subdivisions_per_step=max(1, subdivisions),
-            num_notes=10,
-        )
-    raise ValueError(f"Unknown mode: {mode}")
+    MAX_CHORD = 8
+
+    def __init__(self, sample_rate: int):
+        self.sr = sample_rate
+        self.phases = np.zeros(self.MAX_CHORD, dtype=np.float64)
+        self.digit_index = 0
+        self.sample_in_note = 0
+        self.note: dict | None = None
+
+    @staticmethod
+    def _seq_index(i, n, loop_mode):
+        """Map the running note counter onto a digit index.
+
+        'forward': wrap straight back to the start (i mod n).
+        'pingpong': bounce forward then backward (period 2n-2), so the
+        sequence never jumps — the loop seam becomes inaudible.
+        """
+        if loop_mode == "pingpong" and n > 1:
+            period = 2 * n - 2
+            j = i % period
+            return j if j < n else period - j
+        return i % n
+
+    def _advance_note(self, digits, mod_digits, vp, freq_table):
+        loop_mode = vp.get("loop_mode", "forward")
+        digit = digits[self._seq_index(self.digit_index, len(digits), loop_mode)]
+        idx = digit % len(freq_table)
+        chord_size = max(1, int(vp["chord_size"]))
+        if chord_size > 1:
+            step = int(vp["chord_step"])
+            freqs = [freq_table[(idx + k * step) % len(freq_table)] for k in range(chord_size)]
+        else:
+            freqs = freq_table[idx]
+
+        note = {
+            "freqs": freqs,
+            "duration": float(vp["duration"]),
+            "volume": float(vp["volume"]),
+            "pan": float(vp["pan"]),
+            "waveform": vp["waveform"],
+            "pulse_width": float(vp["pulse_width"]),
+            "brightness": float(vp["brightness"]),
+            "fm_depth": float(vp["fm_depth"]),
+            "fm_ratio": float(vp["fm_ratio"]),
+            "vibrato_depth": 0.0,
+            "vibrato_rate": 5.0,
+        }
+        mod_digit = None
+        if mod_digits and vp["mod_targets"]:
+            mod_digit = mod_digits[self._seq_index(self.digit_index, len(mod_digits), loop_mode)]
+            apply_modulation(note, vp["mod_targets"], mod_digit, vp["mod_depth"])
+
+        samples = max(32, int(self.sr * note["duration"]))
+        if vp["envelope"] == "adsr":
+            env = adsr_envelope(samples, self.sr, *vp["adsr"])
+        else:
+            fade = min(samples // 4, max(8, int(MICRO_FADE_S * self.sr)))
+            env = np.ones(samples, dtype=np.float32)
+            ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+            env[:fade] = ramp
+            env[-fade:] = ramp[::-1]
+
+        if not isinstance(note["freqs"], (list, tuple)):
+            note["freqs"] = [note["freqs"]]
+        gl, gr = pan_gains(note["pan"])
+        note.update(samples=samples, env=env, gl=float(gl), gr=float(gr),
+                    digit=int(digit), mod_digit=mod_digit)
+        self.note = note
+        self.sample_in_note = 0
+        self.digit_index += 1
+
+    def render(self, frames, digits, mod_digits, vp, freq_table):
+        """Render `frames` samples; returns (frames, 2) float32."""
+        out = np.zeros((frames, 2), dtype=np.float32)
+        if not digits or not freq_table:
+            return out
+
+        written = 0
+        while written < frames:
+            if self.note is None or self.sample_in_note >= self.note["samples"]:
+                self._advance_note(digits, mod_digits, vp, freq_table)
+            note = self.note
+            chunk = min(frames - written, note["samples"] - self.sample_in_note)
+
+            seg = np.zeros(chunk, dtype=np.float64)
+            vib_d, vib_r = note["vibrato_depth"], note["vibrato_rate"]
+            for vi, freq in enumerate(note["freqs"][:self.MAX_CHORD]):
+                if vib_d > 0.0:
+                    t_abs = (self.sample_in_note + np.arange(chunk)) / self.sr
+                    inst = freq * (1.0 + vib_d * np.sin(2.0 * np.pi * vib_r * t_abs))
+                    incr = 2.0 * np.pi * inst / self.sr
+                    ph = self.phases[vi] + np.concatenate(([0.0], np.cumsum(incr[:-1])))
+                    self.phases[vi] = (ph[-1] + incr[-1]) % (2.0 * np.pi)
+                else:
+                    omega = 2.0 * np.pi * float(freq) / self.sr
+                    ph = self.phases[vi] + omega * np.arange(chunk, dtype=np.float64)
+                    self.phases[vi] = (self.phases[vi] + omega * chunk) % (2.0 * np.pi)
+                seg += render_wave(ph, note["waveform"], note["pulse_width"],
+                                   note["brightness"], note["fm_depth"], note["fm_ratio"])
+            seg /= len(note["freqs"])
+
+            env = note["env"][self.sample_in_note:self.sample_in_note + chunk]
+            seg = (seg * env * note["volume"]).astype(np.float32)
+            out[written:written + chunk, 0] += seg * note["gl"]
+            out[written:written + chunk, 1] += seg * note["gr"]
+
+            self.sample_in_note += chunk
+            written += chunk
+        return out
 
 
 class LivePlayer:
@@ -65,17 +178,56 @@ class LivePlayer:
             "subdivisions": 2,
             "duration": 0.05,
             "volume": 0.3,
+            "pan": 0.0,
+            "loop_mode": "forward",  # or "pingpong" — seamless at the ends
+            # timbre
+            "waveform": "sine",
+            "pulse_width": 0.3,
+            "brightness": 0.0,
+            "fm_depth": 0.0,
+            "fm_ratio": 2.0,
+            "envelope": "crossfade",
+            "attack": 0.005,
+            "decay": 0.04,
+            "sustain": 0.7,
+            "release": 0.04,
+            # chords
+            "chord_size": 1,
+            "chord_step": 2,
+            # modulation
+            "mod_constant": "none",
+            "mod_targets": (),
+            "mod_depth": 0.5,
+            # counterpoint
+            "cp_constant": "none",
+            "cp_mode": "harmonic_series",
+            "cp_base_freq": 0.0,  # 0 → follow base_freq
+            "cp_waveform": "sine",
+            "cp_volume": 0.15,
+            "cp_pan": 0.5,
+            "cp_duration": 0.0,  # 0 → follow duration
+            # effects
+            "fx_chorus": 0.0,
+            "fx_delay": 0.0,
+            "fx_reverb": 0.0,
         }
 
         self.digits: list[int] = []
         self.digits_key: tuple | None = None
+        self.mod_digits: list[int] = []
+        self.mod_digits_key: tuple | None = None
+        self.cp_digits: list[int] = []
+        self.cp_digits_key: tuple | None = None
 
-        self._freq_table: list[float] = []
-        self._freq_table_key: tuple | None = None
+        self._freq_cache: dict[tuple, list[float]] = {}
 
-        self.phase = 0.0
-        self.digit_index = 0
-        self.samples_into_note = 0
+        self.voice = _Voice(sample_rate)
+        self.cp_voice = _Voice(sample_rate)
+        self.effects = EffectChain(sample_rate, 2)
+
+        self.visual_buffer = np.zeros((int(VISUAL_SECONDS * sample_rate), 2), dtype=np.float32)
+        self.visual_pos = 0
+        self.current_info: dict = {}
 
         self.stream: sd.OutputStream | None = None
         self.last_callback_error: str | None = None
@@ -91,38 +243,100 @@ class LivePlayer:
             self.params.update(kwargs)
 
     def refresh_digits(self) -> None:
-        """Re-fetch the digit sequence based on current constant/num_digits/mode.
+        """Re-fetch the carrier/modulator/counterpoint digit sequences.
 
-        Call from the UI thread (it does mpmath work). The new list is swapped
-        in atomically under the lock; the audio thread reads it on the next
+        Call from the UI thread (it does mpmath work). New lists are swapped
+        in atomically under the lock; the audio thread reads them on the next
         callback.
         """
         with self.lock:
-            constant = self.params["constant"]
-            num_digits = int(self.params["num_digits"])
-            uses_pairs = _mode_uses_pairs(self.params["mode"])
-        key = (constant, num_digits, uses_pairs)
-        if key == self.digits_key:
-            return
-        if uses_pairs:
-            new_digits = get_irrational_digit_pairs(constant, num_digits)
-        else:
-            new_digits = get_irrational_digits(constant, num_digits)
-        with self.lock:
-            self.digits = new_digits
-            self.digits_key = key
-            if self.digit_index >= len(new_digits):
-                self.digit_index = 0
+            p = dict(self.params)
+        num_digits = int(p["num_digits"])
+
+        key = (p["constant"], num_digits, mode_uses_pairs(p["mode"]))
+        if key != self.digits_key:
+            new = (get_irrational_digit_pairs if key[2] else get_irrational_digits)(key[0], num_digits)
+            with self.lock:
+                self.digits = new
+                self.digits_key = key
+
+        # the modulator always uses single digits
+        mkey = (p["mod_constant"], num_digits)
+        if mkey != self.mod_digits_key:
+            new = get_irrational_digits(mkey[0], num_digits) if mkey[0] != "none" else []
+            with self.lock:
+                self.mod_digits = new
+                self.mod_digits_key = mkey
+
+        ckey = (p["cp_constant"], num_digits, p["cp_mode"] and mode_uses_pairs(p["cp_mode"]))
+        if ckey != self.cp_digits_key:
+            if ckey[0] != "none":
+                new = (get_irrational_digit_pairs if ckey[2] else get_irrational_digits)(ckey[0], num_digits)
+            else:
+                new = []
+            with self.lock:
+                self.cp_digits = new
+                self.cp_digits_key = ckey
+
+    @staticmethod
+    def _ensure_audio_device():
+        """Make sure PortAudio has a usable output device; return one.
+
+        PortAudio caches its device list when first initialized. In a
+        long-running server process that list can be empty or stale (e.g.
+        the process started before audio was available, or the Windows
+        default device changed since), in which case the default output
+        resolves to -1 and opening a stream fails. Re-initializing PortAudio
+        rescans the hardware. Returns a device index to use explicitly, or
+        None to use the (now valid) default.
+        """
+        def default_output():
+            # sd.default.device is an (input, output) pair-like object
+            try:
+                dev = sd.default.device
+                try:
+                    out = dev[1]
+                except (TypeError, IndexError):
+                    out = dev
+                return -1 if out is None else int(out)
+            except Exception:
+                return -1
+
+        if default_output() >= 0:
+            return None
+        # rescan (safe here: this process has no open streams at this point)
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception:
+            pass
+        if default_output() >= 0:
+            return None
+        # still no default — explicitly pick the first stereo-capable output
+        try:
+            for i, d in enumerate(sd.query_devices()):
+                if d.get("max_output_channels", 0) >= 2:
+                    return i
+        except Exception:
+            pass
+        return None  # let sounddevice raise its own descriptive error
 
     def start(self) -> None:
         if self.stream is not None:
             return
         self.refresh_digits()
+        self.effects.reset()
+        device = self._ensure_audio_device()
         self.stream = sd.OutputStream(
             samplerate=self.sample_rate,
-            channels=1,
+            device=device,
+            channels=2,
             dtype="float32",
             blocksize=self.block_size,
+            # 'high' buys extra device-side buffering so brief GIL stalls
+            # (UI visuals, mpmath refreshes) can't cause audible underruns.
+            # Parameter changes still apply within ~0.1 s.
+            latency="high",
             callback=self._callback,
         )
         self.stream.start()
@@ -140,62 +354,100 @@ class LivePlayer:
     def is_running(self) -> bool:
         return self.stream is not None
 
+    def get_visual_snapshot(self):
+        """Return (recent_audio (N,2) oldest-first, info dict) for the UI."""
+        with self.lock:
+            pos = self.visual_pos
+            buf = np.concatenate([self.visual_buffer[pos:], self.visual_buffer[:pos]])
+            info = dict(self.current_info)
+        return buf, info
+
     # --------------------------------------------------------------- internal
 
-    def _get_freq_table(self, mode: str, base_freq: float, subdivisions: int) -> list[float]:
-        key = (mode, round(base_freq, 4), int(subdivisions))
-        if key != self._freq_table_key:
-            self._freq_table = _build_freq_table(mode, base_freq, int(subdivisions))
-            self._freq_table_key = key
-        return self._freq_table
+    def _get_freq_table(self, mode, base_freq, subdivisions):
+        key = (mode, round(float(base_freq), 4), int(subdivisions))
+        if key not in self._freq_cache:
+            if len(self._freq_cache) > 256:
+                self._freq_cache.clear()
+            self._freq_cache[key] = build_frequency_table(mode, base_freq, int(subdivisions))
+        return self._freq_cache[key]
 
-    def _current_freq(self, p: dict, digits: list[int]) -> float:
-        if not digits:
-            return 0.0
-        table = self._get_freq_table(p["mode"], p["base_freq"], p["subdivisions"])
-        digit = digits[self.digit_index % len(digits)]
-        if _mode_uses_pairs(p["mode"]):
-            return table[digit % len(table)]
-        return table[digit % len(table)]
+    @staticmethod
+    def _carrier_voice_params(p):
+        return {
+            "duration": p["duration"], "volume": p["volume"], "pan": p["pan"],
+            "waveform": p["waveform"], "pulse_width": p["pulse_width"],
+            "brightness": p["brightness"], "fm_depth": p["fm_depth"], "fm_ratio": p["fm_ratio"],
+            "envelope": p["envelope"],
+            "adsr": (p["attack"], p["decay"], p["sustain"], p["release"]),
+            "chord_size": p["chord_size"], "chord_step": p["chord_step"],
+            "mod_targets": tuple(p["mod_targets"]), "mod_depth": p["mod_depth"],
+            "loop_mode": p["loop_mode"],
+        }
+
+    @staticmethod
+    def _cp_voice_params(p):
+        return {
+            "duration": p["cp_duration"] or p["duration"],
+            "volume": p["cp_volume"], "pan": p["cp_pan"],
+            "waveform": p["cp_waveform"], "pulse_width": p["pulse_width"],
+            "brightness": p["brightness"], "fm_depth": p["fm_depth"], "fm_ratio": p["fm_ratio"],
+            "envelope": p["envelope"],
+            "adsr": (p["attack"], p["decay"], p["sustain"], p["release"]),
+            "chord_size": 1, "chord_step": 2,
+            "mod_targets": (), "mod_depth": 0.0,
+            "loop_mode": p["loop_mode"],
+        }
 
     def _callback(self, outdata, frames, time_info, status):
         try:
             with self.lock:
                 p = dict(self.params)
                 digits = self.digits
+                mod_digits = self.mod_digits
+                cp_digits = self.cp_digits
 
             if not digits:
                 outdata.fill(0.0)
                 return
 
-            samples_per_note = max(1, int(self.sample_rate * p["duration"]))
-            out = np.zeros(frames, dtype=np.float32)
+            table = self._get_freq_table(p["mode"], p["base_freq"], p["subdivisions"])
+            out = self.voice.render(frames, digits, mod_digits,
+                                    self._carrier_voice_params(p), table)
 
-            written = 0
-            while written < frames:
-                # If we've overshot the (possibly newly-reduced) note length,
-                # advance to the next digit BEFORE computing chunk so chunk
-                # is always >= 1 and the loop makes forward progress.
-                if self.samples_into_note >= samples_per_note:
-                    self.samples_into_note = 0
-                    self.digit_index = (self.digit_index + 1) % len(digits)
+            if p["cp_constant"] != "none" and cp_digits:
+                cp_table = self._get_freq_table(
+                    p["cp_mode"], p["cp_base_freq"] or p["base_freq"], p["subdivisions"])
+                out += self.cp_voice.render(frames, cp_digits, [],
+                                            self._cp_voice_params(p), cp_table)
 
-                freq = self._current_freq(p, digits)
-                remaining_in_note = samples_per_note - self.samples_into_note
-                chunk = min(frames - written, remaining_in_note)
-                if chunk <= 0:
-                    break  # defensive — should not happen after the guard above
+            self.effects.set_amounts(chorus=p["fx_chorus"], delay=p["fx_delay"],
+                                     reverb=p["fx_reverb"])
+            if self.effects.active:
+                out = self.effects.process(out)
 
-                omega = 2.0 * np.pi * float(freq) / self.sample_rate
-                idx = np.arange(chunk, dtype=np.float64)
-                out[written:written + chunk] = (
-                    float(p["volume"]) * np.sin(self.phase + omega * idx)
-                ).astype(np.float32)
-                self.phase = (self.phase + omega * chunk) % (2.0 * np.pi)
-                self.samples_into_note += chunk
-                written += chunk
+            outdata[:, :] = out
 
-            outdata[:, 0] = out
+            # ---- visuals tap (cheap: one ring-buffer write + a tiny dict)
+            note = self.voice.note or {}
+            cp_note = self.cp_voice.note if p["cp_constant"] != "none" else None
+            info = {
+                "digit": note.get("digit"),
+                "digit_index": max(0, self.voice.digit_index - 1),
+                "mod_digit": note.get("mod_digit"),
+                "cp_digit": (cp_note or {}).get("digit"),
+                "freqs": [round(f, 1) for f in note.get("freqs", [])],
+            }
+            with self.lock:
+                n = len(self.visual_buffer)
+                pos = self.visual_pos
+                take = min(frames, n)
+                first = min(take, n - pos)
+                self.visual_buffer[pos:pos + first] = out[:first]
+                if take > first:
+                    self.visual_buffer[:take - first] = out[first:take]
+                self.visual_pos = (pos + take) % n
+                self.current_info = info
         except Exception:
             # Never let an exception escape into cffi. Fill silence and
             # remember it for diagnostics.

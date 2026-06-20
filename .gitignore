@@ -1,3 +1,5 @@
 openai_api_key
 .ipynb_checkpoints/
 *.wav
+presets.json
+__pycache__/

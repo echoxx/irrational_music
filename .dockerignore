@@ -1,0 +1,4 @@
+# The build context only needs requirements.txt — the source folder is
+# bind-mounted at runtime, never copied into the image.
+*
+!requirements.txt

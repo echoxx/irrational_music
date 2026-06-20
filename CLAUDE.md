@@ -27,9 +27,10 @@ Note: The project uses Anaconda/Miniconda environment. Some SciPy version warnin
 ### Running
 
 - CLI playback: `./run.sh` (or `python irrational.py`) — plays the configured constants in sequence and shows spectrograms.
-- Interactive UI: `./run_ui.sh` (or `/mnt/e/anaconda3/python.exe app.py`) — launches a local Gradio server (default `http://127.0.0.1:7860`) with sliders for note duration, base frequency, volume, crossfade, and a switch between harmonic series / equal temperament / continuous (digit pairs) / microtonal modes. The UI offers two playback modes:
-  - **Generate** — synthesizes a fixed buffer, shows the spectrogram, and plays in the browser. Good for sharing or downloading a snippet.
-  - **Start Live / Stop Live** (`live.py`) — opens a `sounddevice.OutputStream` that plays continuously on the **host machine's speakers** while reading parameters from a shared dict. Slider changes are heard within ~50 ms with no restart-from-beginning. Local-only: audio plays where `app.py` runs, not in the browser, so this would not work over a network deployment.
+- Interactive UI: `./run_ui.sh` (or `/mnt/e/anaconda3/python.exe app.py`) — launches a local Gradio server (default `http://127.0.0.1:7860`). Controls are grouped into tabs — **Source** (constant, digits, duration, volume, pan), **Tuning** (14 frequency modes incl. scales, just intonation, Bohlen–Pierce, Pythagorean, golden-ratio, prime/inharmonic), **Timbre** (sine/saw/square/triangle/pulse waveforms, brightness, FM, crossfade-or-ADSR envelope, chords), **Modulation** (a second constant's digits steer rhythm/transpose/harmonic/dynamics/brightness/waveform/vibrato/pan per note, plus a simultaneous counterpoint voice), **FX** (chorus, delay, reverb), **Visuals** — with save/load presets (`presets.json`, gitignored). The UI offers two playback modes:
+  - **Generate** — synthesizes a fixed stereo buffer, shows the spectrogram, and plays in the browser. Good for sharing or downloading a snippet.
+  - **Start Live / Stop Live** (`live.py`) — opens a stereo `sounddevice.OutputStream` that plays continuously on the **host machine's speakers** while reading parameters from a shared dict. Slider changes are heard within ~50 ms with no restart-from-beginning. While running, a `gr.Timer` polls `LivePlayer.get_visual_snapshot()` to update an oscilloscope, a live spectrogram of the last 3 s, and a digit ticker. Local-only: audio plays where `app.py` runs, not in the browser, so this would not work over a network deployment.
+- Classic UI: `./run_ui_classic.sh` (`app_classic.py`, port `7861`) — the pre-revision single-page interface, kept runnable for A/B comparison with the new tabbed UI. Both can run at once.
 
   Note: WSL's `python3` does not have the project's dependencies — the project uses the Windows Anaconda Python at `/mnt/e/anaconda3/python.exe`.
 
@@ -142,6 +143,13 @@ play_frequencies(
 
 ## File Structure
 
+- `irrational.py` - Core library: `IRRATIONAL_CONSTANTS` registry (20 constants incl. γ, Catalan, Apéry, Khinchin, e^π, Champernowne), `FREQUENCY_MODES` registry + `build_frequency_table()` (14 tuning modes), digit getters, `generate_audio()`, shared dark spectrogram helpers (`draw_spectrogram`, `style_dark_figure`), CLI `__main__`
+- `synth.py` - Shared synthesis engine: `render_wave()` (sine/saw/square/triangle/pulse + brightness + FM, phase-based so live stays click-free), `adsr_envelope()`, `pan_gains()`, `render_sequence()` (offline note-event renderer: chords, per-note timbre, vibrato, stereo pan, crossfade/ADSR)
+- `modulation.py` - Cross-modulation: `MOD_TARGETS` (digit → rhythm/transpose/harmonic/dynamics/brightness/waveform/vibrato/pan), `apply_modulation()`, `build_note_sequence()`
+- `effects.py` - Streamable chorus / feedback delay / Schroeder reverb (`EffectChain` — block-split processing is bit-identical to whole-buffer; used by both paths)
+- `live.py` - `LivePlayer` + `_Voice`: stereo real-time engine with full feature parity (modulation, counterpoint voice, chords, effects) and a rolling buffer for the live visuals
+- `presets.py` - Save/load UI presets to `presets.json` (gitignored)
+- `app.py` - New tabbed Gradio UI (port 7860); `app_classic.py` + `run_ui_classic.sh` - pre-revision UI kept for comparison (port 7861)
 - `irrational.ipynb` - Main development notebook with core functions
 - `2024-12-18_irrational.ipynb` - Latest experimental version
 - `example.py` - Simple OpenAI API test script (reads `OPENAI_API_KEY` from the environment)

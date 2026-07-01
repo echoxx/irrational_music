@@ -21,6 +21,9 @@ RUN printf 'pcm.!default { type pulse }\nctl.!default { type pulse }\n' > /etc/a
 # Claude Code CLI — installed via the native binary installer (no Node.js).
 # Drops a self-contained `claude` binary under /root/.local/bin. curl + CA
 # certs are needed to fetch it at build time and to reach the API at runtime.
+# CLAUDE_INSTALL_DATE is injected by run-sandbox.sh as today's date so this
+# layer is re-run (at most) once per calendar day, keeping the binary current.
+ARG CLAUDE_INSTALL_DATE=unknown
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \

@@ -100,7 +100,11 @@ case "${1:-}" in
     NETWORK=1        # Claude Code needs to reach api.anthropic.com
     CLAUDE_PERSIST=1 # keep the OAuth login across --rm runs (see below)
     CMD=("${@:2}")   # drop --claude; default below launches the `claude` REPL
-    if [[ ${#CMD[@]} -eq 0 ]]; then CMD=(claude); fi
+    # Default: Fable, with permission prompts off. The container is the safety
+    # boundary (folder-only mount, caps dropped), so skipping prompts is OK here.
+    if [[ ${#CMD[@]} -eq 0 ]]; then
+      CMD=(claude --model claude-fable-5 --dangerously-skip-permissions)
+    fi
     ;;
 esac
 
@@ -152,6 +156,9 @@ if [[ "${CLAUDE_PERSIST:-0}" == "1" ]]; then
   RUN_OPTS+=(
     --mount "type=bind,source=$CLAUDE_CFG_DIR,target=/claude-config"
     -e CLAUDE_CONFIG_DIR=/claude-config
+    # Claude Code refuses --dangerously-skip-permissions as root unless it
+    # knows it's inside a sandboxed container.
+    -e IS_SANDBOX=1
   )
   echo "Claude Code: persisting login in $CLAUDE_CFG_DIR (log in once on the first run)."
 fi

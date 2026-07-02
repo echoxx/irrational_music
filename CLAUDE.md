@@ -45,7 +45,7 @@ For an isolated environment that **only has access to this folder**, use the Doc
 ./run-sandbox.sh --audio         # + host-speaker audio (see below)
 ./run-sandbox.sh --audio python irrational.py   # CLI playback with sound
 ./run-sandbox.sh --ui            # Gradio UI: enables network + port 7860 + audio
-./run-sandbox.sh --claude        # launch the Claude Code CLI inside the sandbox (enables network)
+./run-sandbox.sh --claude        # Claude Code CLI in the sandbox (network on; latest build, Fable model, --dangerously-skip-permissions)
 NETWORK=1 ./run-sandbox.sh ...   # enable networking without the UI helper
 AUDIO=1   ./run-sandbox.sh ...   # enable host audio without the --audio flag
 ```
@@ -54,7 +54,7 @@ Isolation defaults: `--cap-drop ALL`, `--security-opt no-new-privileges`, `--net
 
 - **Audio** is opt-in. WSLg runs a PulseAudio server at `/mnt/wslg/PulseServer` that pipes to the Windows speakers. With `--audio`/`AUDIO=1` the launcher mounts that socket and sets `PULSE_SERVER`; the container's ALSA default routes through it. This is the way to get real playback (incl. `live.py`) from inside the sandbox. Cost: the container can then talk to the host's PulseAudio server, so it's off by default.
 - **Network** is off by default; `--ui`, `--claude`, and `NETWORK=1` enable Docker's bridge network.
-- **Claude Code** is baked into the image (native binary at `/root/.local/bin/claude`, no Node.js). Run it with `./run-sandbox.sh --claude` (which turns on networking, since it must reach `api.anthropic.com`). Authentication: if `ANTHROPIC_API_KEY` is exported, the launcher forwards it (network-only, same policy as the OpenAI key); otherwise it reads `~/.config/irrational/anthropic_api_key` if present. Override the path with `ANTHROPIC_API_KEY_FILE`. Without a key, run `claude` once interactively to log in — but note the container is `--rm`, so that login does not persist between runs.
+- **Claude Code** is baked into the image (native binary at `/root/.local/bin/claude`, `latest` release channel, re-fetched at most once per day via a build-arg cache bust). `./run-sandbox.sh --claude` turns on networking (it must reach `api.anthropic.com`) and by default launches `claude --model claude-fable-5 --dangerously-skip-permissions` — the container itself is the permission boundary (folder-only mount, no caps), and `IS_SANDBOX=1` is set so Claude Code allows the flag as root. Pass your own command after `--claude` to override the defaults. Authentication: if `ANTHROPIC_API_KEY` is exported, the launcher forwards it (network-only, same policy as the OpenAI key); otherwise it reads `~/.config/irrational/anthropic_api_key` if present (override with `ANTHROPIC_API_KEY_FILE`). Without a key, log in once interactively — the login persists across runs in `~/.config/irrational/claude-config`, mounted into the container as `CLAUDE_CONFIG_DIR`.
 - Requires Docker available in WSL (`docker --version`).
 
 ## Core Architecture

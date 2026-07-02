@@ -12,7 +12,7 @@ building the note list, and the live path applies it at each note boundary
 in the audio callback.
 """
 
-from synth import WAVEFORM_CHOICES
+from synth import WAVEFORM_CHOICES, NUM_HARMONICS, harmonic_amps
 
 
 def _scale_freqs(freqs, mult):
@@ -54,6 +54,14 @@ def apply_waveform(note, t, depth):
         note["waveform"] = WAVEFORM_CHOICES[digit % len(WAVEFORM_CHOICES)]
 
 
+def apply_morph(note, t, depth):
+    """Digit sweeps the wavetable morph (sine→tri→saw→square→pulse)."""
+    if depth > 0:
+        note["waveform"] = "morph"
+        base = float(note.get("morph", 0.0))
+        note["morph"] = min(1.0, max(0.0, (1.0 - depth) * base + depth * t))
+
+
 def apply_vibrato(note, t, depth):
     """Digit sets vibrato depth (up to ~3% deviation) and speeds up the LFO."""
     note["vibrato_depth"] = depth * 0.03 * t
@@ -72,6 +80,7 @@ MOD_TARGETS = {
     "dynamics": ("Dynamics (per-note volume)", apply_dynamics),
     "brightness": ("Brightness (added harmonics)", apply_brightness),
     "waveform": ("Waveform switch (digit → wave)", apply_waveform),
+    "morph": ("Wavetable morph (digit → timbre)", apply_morph),
     "vibrato": ("Vibrato (pitch LFO)", apply_vibrato),
     "pan": ("Stereo pan", apply_pan),
 }
@@ -87,7 +96,9 @@ def apply_modulation(note, targets, mod_digit, depth):
 
 
 def build_note_sequence(digits, freq_table, base_params, chord_size=1, chord_step=2,
-                        mod_digits=None, mod_targets=(), mod_depth=0.5):
+                        mod_digits=None, mod_targets=(), mod_depth=0.5,
+                        harm_digits=None, harm_slide=False, harm_offset=0,
+                        harm_rolloff=0.5):
     """
     Build the note-event list for synth.render_sequence from a carrier digit
     stream.
@@ -98,6 +109,11 @@ def build_note_sequence(digits, freq_table, base_params, chord_size=1, chord_ste
     chord_size/chord_step: 1 = single notes; >1 stacks extra voices every
         chord_step table degrees above the digit's note (wrapping)
     mod_digits/mod_targets/mod_depth: optional modulator stream + targets
+    harm_digits: optional digit stream whose window of NUM_HARMONICS digits
+        sets each note's additive partial amplitudes (overrides waveform,
+        morph, and brightness — including digit-driven ones above)
+    harm_slide: advance the window one digit per note so the spectrum evolves
+    harm_offset/harm_rolloff: window start index / 1/k**rolloff taming
     """
     table_len = len(freq_table)
     notes = []
@@ -111,5 +127,10 @@ def build_note_sequence(digits, freq_table, base_params, chord_size=1, chord_ste
         note["freqs"] = freqs
         if mod_digits is not None and mod_targets:
             apply_modulation(note, mod_targets, mod_digits[i % len(mod_digits)], mod_depth)
+        if harm_digits:
+            n = len(harm_digits)
+            start = int(harm_offset) + (i if harm_slide else 0)
+            window = [harm_digits[(start + k) % n] for k in range(NUM_HARMONICS)]
+            note["harmonics"] = harmonic_amps(window, harm_rolloff)
         notes.append(note)
     return notes

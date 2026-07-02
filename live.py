@@ -34,7 +34,8 @@ from irrational import (
     mode_uses_pairs,
 )
 from modulation import apply_modulation
-from synth import adsr_envelope, pan_gains, render_wave
+from synth import (NUM_HARMONICS, adsr_envelope, harmonic_amps, pan_gains,
+                   render_wave, resolve_fm_ratio)
 
 SAMPLE_RATE = 44100
 BLOCK_SIZE = 2048
@@ -76,7 +77,7 @@ class _Voice:
             return j if j < n else period - j
         return i % n
 
-    def _advance_note(self, digits, mod_digits, vp, freq_table):
+    def _advance_note(self, digits, mod_digits, harm_digits, vp, freq_table):
         loop_mode = vp.get("loop_mode", "forward")
         digit = digits[self._seq_index(self.digit_index, len(digits), loop_mode)]
         idx = digit % len(freq_table)
@@ -94,6 +95,7 @@ class _Voice:
             "pan": float(vp["pan"]),
             "waveform": vp["waveform"],
             "pulse_width": float(vp["pulse_width"]),
+            "morph": float(vp["morph"]),
             "brightness": float(vp["brightness"]),
             "fm_depth": float(vp["fm_depth"]),
             "fm_ratio": float(vp["fm_ratio"]),
@@ -104,6 +106,16 @@ class _Voice:
         if mod_digits and vp["mod_targets"]:
             mod_digit = mod_digits[self._seq_index(self.digit_index, len(mod_digits), loop_mode)]
             apply_modulation(note, vp["mod_targets"], mod_digit, vp["mod_depth"])
+
+        if harm_digits:
+            # digit window → additive partial amplitudes; built fresh per note
+            # in the callback and never mutated afterwards (thread-safe).
+            n = len(harm_digits)
+            start = int(vp["harm_offset"])
+            if vp["harm_slide"]:
+                start += self._seq_index(self.digit_index, n, loop_mode)
+            window = [harm_digits[(start + k) % n] for k in range(NUM_HARMONICS)]
+            note["harmonics"] = harmonic_amps(window, vp["harm_rolloff"])
 
         samples = max(32, int(self.sr * note["duration"]))
         if vp["envelope"] == "adsr":
@@ -124,7 +136,7 @@ class _Voice:
         self.sample_in_note = 0
         self.digit_index += 1
 
-    def render(self, frames, digits, mod_digits, vp, freq_table):
+    def render(self, frames, digits, mod_digits, harm_digits, vp, freq_table):
         """Render `frames` samples; returns (frames, 2) float32."""
         out = np.zeros((frames, 2), dtype=np.float32)
         if not digits or not freq_table:
@@ -133,7 +145,7 @@ class _Voice:
         written = 0
         while written < frames:
             if self.note is None or self.sample_in_note >= self.note["samples"]:
-                self._advance_note(digits, mod_digits, vp, freq_table)
+                self._advance_note(digits, mod_digits, harm_digits, vp, freq_table)
             note = self.note
             chunk = min(frames - written, note["samples"] - self.sample_in_note)
 
@@ -151,7 +163,8 @@ class _Voice:
                     ph = self.phases[vi] + omega * np.arange(chunk, dtype=np.float64)
                     self.phases[vi] = (self.phases[vi] + omega * chunk) % (2.0 * np.pi)
                 seg += render_wave(ph, note["waveform"], note["pulse_width"],
-                                   note["brightness"], note["fm_depth"], note["fm_ratio"])
+                                   note["brightness"], note["fm_depth"], note["fm_ratio"],
+                                   morph=note["morph"], harmonics=note.get("harmonics"))
             seg /= len(note["freqs"])
 
             env = note["env"][self.sample_in_note:self.sample_in_note + chunk]
@@ -183,9 +196,17 @@ class LivePlayer:
             # timbre
             "waveform": "sine",
             "pulse_width": 0.3,
+            "morph": 0.0,
             "brightness": 0.0,
             "fm_depth": 0.0,
             "fm_ratio": 2.0,
+            "fm_preset": "custom",
+            # digit-driven harmonics (constant key only — the digit list is
+            # fetched in refresh_digits; no arrays ever live in params)
+            "harm_constant": "none",
+            "harm_slide": False,
+            "harm_offset": 0,
+            "harm_rolloff": 0.5,
             "envelope": "crossfade",
             "attack": 0.005,
             "decay": 0.04,
@@ -210,6 +231,10 @@ class LivePlayer:
             "fx_chorus": 0.0,
             "fx_delay": 0.0,
             "fx_reverb": 0.0,
+            "fx_room_size": 0.5,
+            "fx_damping": 0.5,
+            "fx_width": 1.0,
+            "fx_predelay": 0.0,
         }
 
         self.digits: list[int] = []
@@ -218,6 +243,8 @@ class LivePlayer:
         self.mod_digits_key: tuple | None = None
         self.cp_digits: list[int] = []
         self.cp_digits_key: tuple | None = None
+        self.harm_digits: list[int] = []
+        self.harm_digits_key: tuple | None = None
 
         self._freq_cache: dict[tuple, list[float]] = {}
 
@@ -238,6 +265,10 @@ class LivePlayer:
         self._rec_max_frames = int(self.sample_rate * 60 * 10)  # 10 min soft cap (~210 MB)
         self._rec_truncated = False
 
+        # Set by restart_sequence() (UI thread), consumed by the audio
+        # callback, which performs the actual rewind on the audio thread.
+        self._restart_requested = False
+
         self.stream: sd.OutputStream | None = None
         self.last_callback_error: str | None = None
 
@@ -250,6 +281,17 @@ class LivePlayer:
     def set_params(self, **kwargs) -> None:
         with self.lock:
             self.params.update(kwargs)
+
+    def restart_sequence(self) -> None:
+        """Rewind live playback to the first digit of the constant.
+
+        Only sets a flag; the audio callback does the rewind on the audio
+        thread (voice state is audio-thread-only). The notes currently
+        sounding finish naturally — click-free — and the next note of each
+        voice starts from digit index 0.
+        """
+        with self.lock:
+            self._restart_requested = True
 
     def start_recording(self) -> None:
         """Begin capturing the live audio stream.
@@ -319,6 +361,14 @@ class LivePlayer:
             with self.lock:
                 self.mod_digits = new
                 self.mod_digits_key = mkey
+
+        # the harmonics spectrum stream also uses single digits
+        hkey = (p["harm_constant"], num_digits)
+        if hkey != self.harm_digits_key:
+            new = get_irrational_digits(hkey[0], num_digits) if hkey[0] != "none" else []
+            with self.lock:
+                self.harm_digits = new
+                self.harm_digits_key = hkey
 
         ckey = (p["cp_constant"], num_digits, p["cp_mode"] and mode_uses_pairs(p["cp_mode"]))
         if ckey != self.cp_digits_key:
@@ -429,7 +479,11 @@ class LivePlayer:
         return {
             "duration": p["duration"], "volume": p["volume"], "pan": p["pan"],
             "waveform": p["waveform"], "pulse_width": p["pulse_width"],
-            "brightness": p["brightness"], "fm_depth": p["fm_depth"], "fm_ratio": p["fm_ratio"],
+            "morph": p["morph"], "brightness": p["brightness"],
+            "fm_depth": p["fm_depth"],
+            "fm_ratio": resolve_fm_ratio(p["fm_preset"], p["fm_ratio"]),
+            "harm_slide": p["harm_slide"], "harm_offset": p["harm_offset"],
+            "harm_rolloff": p["harm_rolloff"],
             "envelope": p["envelope"],
             "adsr": (p["attack"], p["decay"], p["sustain"], p["release"]),
             "chord_size": p["chord_size"], "chord_step": p["chord_step"],
@@ -443,7 +497,12 @@ class LivePlayer:
             "duration": p["cp_duration"] or p["duration"],
             "volume": p["cp_volume"], "pan": p["cp_pan"],
             "waveform": p["cp_waveform"], "pulse_width": p["pulse_width"],
-            "brightness": p["brightness"], "fm_depth": p["fm_depth"], "fm_ratio": p["fm_ratio"],
+            "morph": p["morph"], "brightness": p["brightness"],
+            "fm_depth": p["fm_depth"],
+            "fm_ratio": resolve_fm_ratio(p["fm_preset"], p["fm_ratio"]),
+            # cp voice gets an empty harm stream; keys kept for vp uniformity
+            "harm_slide": p["harm_slide"], "harm_offset": p["harm_offset"],
+            "harm_rolloff": p["harm_rolloff"],
             "envelope": p["envelope"],
             "adsr": (p["attack"], p["decay"], p["sustain"], p["release"]),
             "chord_size": 1, "chord_step": 2,
@@ -458,23 +517,38 @@ class LivePlayer:
                 digits = self.digits
                 mod_digits = self.mod_digits
                 cp_digits = self.cp_digits
+                harm_digits = self.harm_digits
+                restart = self._restart_requested
+                self._restart_requested = False
+
+            if restart:
+                # Rewind the digit walks (carrier + counterpoint; the
+                # modulator and harmonics windows follow digit_index, so
+                # they realign automatically). The in-flight notes play
+                # out, then _advance_note picks digit index 0.
+                self.voice.digit_index = 0
+                self.cp_voice.digit_index = 0
 
             if not digits:
                 outdata.fill(0.0)
                 return
 
             table = self._get_freq_table(p["mode"], p["base_freq"], p["subdivisions"])
-            out = self.voice.render(frames, digits, mod_digits,
+            out = self.voice.render(frames, digits, mod_digits, harm_digits,
                                     self._carrier_voice_params(p), table)
 
             if p["cp_constant"] != "none" and cp_digits:
                 cp_table = self._get_freq_table(
                     p["cp_mode"], p["cp_base_freq"] or p["base_freq"], p["subdivisions"])
-                out += self.cp_voice.render(frames, cp_digits, [],
+                out += self.cp_voice.render(frames, cp_digits, [], [],
                                             self._cp_voice_params(p), cp_table)
 
             self.effects.set_amounts(chorus=p["fx_chorus"], delay=p["fx_delay"],
-                                     reverb=p["fx_reverb"])
+                                     reverb=p["fx_reverb"],
+                                     reverb_room=p["fx_room_size"],
+                                     reverb_damp=p["fx_damping"],
+                                     reverb_width=p["fx_width"],
+                                     reverb_predelay=p["fx_predelay"])
             if self.effects.active:
                 out = self.effects.process(out)
 

@@ -13,6 +13,7 @@ computed state, so each chunk is pure numpy (no per-sample Python loop).
 """
 
 import numpy as np
+from scipy import signal as sps
 
 
 class _FeedbackComb:
@@ -33,6 +34,39 @@ class _FeedbackComb:
             y = x[i:i + n] + self.gain * self.buf[sl]
             out[i:i + n] = y
             self.buf[sl] = y
+            self.pos = (self.pos + n) % self.delay
+            i += n
+        return out
+
+
+class _LowpassComb:
+    """Freeverb comb: output y[n] = buf[n-D]; the feedback path is one-pole
+    lowpassed, fs[n] = (1-damp)*y[n] + damp*fs[n-1], and the buffer is
+    rewritten with x[n] + feedback*fs[n].
+
+    Mono (Freeverb runs an independent bank per channel). Vectorized in
+    delay-sized chunks like _FeedbackComb: within a chunk every delayed read
+    is already-written state, and the lowpass recurrence runs through
+    lfilter with carried zi state — per-sample-deterministic, so block-split
+    processing stays bit-identical to whole-buffer processing.
+    """
+
+    def __init__(self, delay_samples):
+        self.delay = max(1, int(delay_samples))
+        self.buf = np.zeros(self.delay, dtype=np.float64)
+        self.pos = 0
+        self.zi = np.zeros(1, dtype=np.float64)
+
+    def process(self, x, feedback, damp):
+        out = np.empty(len(x), dtype=np.float64)
+        i = 0
+        while i < len(x):
+            n = min(self.delay - self.pos, len(x) - i)
+            sl = slice(self.pos, self.pos + n)
+            y = self.buf[sl].copy()
+            fs, self.zi = sps.lfilter([1.0 - damp], [1.0, -damp], y, zi=self.zi)
+            self.buf[sl] = x[i:i + n] + feedback * fs
+            out[i:i + n] = y
             self.pos = (self.pos + n) % self.delay
             i += n
         return out
@@ -109,28 +143,70 @@ class Delay:
 
 
 class Reverb:
-    """Classic Schroeder reverb: 4 parallel combs into 2 series allpasses."""
+    """Freeverb-style reverb: per channel, 8 lowpass-damped feedback combs in
+    parallel into 4 series allpasses, with pre-delay and stereo width.
 
-    COMB_MS = (29.7, 37.1, 41.1, 43.7)
-    COMB_GAINS = (0.805, 0.827, 0.783, 0.764)
-    ALLPASS_MS = (5.0, 1.7)
-    ALLPASS_GAIN = 0.7
+    room_size / damping / width / predelay_s are live-adjustable plain floats
+    (see the EffectChain thread note); heavy state is only touched by
+    process(). A mid-stream pre-delay change moves the wet read offset, which
+    causes a small wet-only time jump — accepted for this experimental tool.
+    """
+
+    # Classic Freeverb tunings, in samples at 44.1 kHz.
+    COMB_TUNINGS = (1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617)
+    ALLPASS_TUNINGS = (556, 441, 341, 225)
+    ALLPASS_GAIN = 0.5
+    STEREO_SPREAD = 23
+    MAX_PREDELAY_S = 0.25
+    WET_SCALE = 0.09  # level-match: wet-path RMS ≈ 0.36x dry at room=0.5, wet=1
 
     def __init__(self, sample_rate, channels):
-        ms = sample_rate / 1000.0
-        # slight per-channel detuning of comb delays decorrelates L/R
+        self.sr = sample_rate
+        self.channels = channels
+        scale = sample_rate / 44100.0
+        spread = int(self.STEREO_SPREAD * scale)
         self.combs = [
-            _FeedbackComb(int(d * ms) + (1 if i % 2 else 0), g, channels)
-            for i, (d, g) in enumerate(zip(self.COMB_MS, self.COMB_GAINS))
+            [_LowpassComb(int(d * scale) + spread * c) for d in self.COMB_TUNINGS]
+            for c in range(channels)
         ]
-        self.allpasses = [_Allpass(int(d * ms), self.ALLPASS_GAIN, channels)
-                          for d in self.ALLPASS_MS]
+        self.allpasses = [
+            [_Allpass(int(d * scale) + spread * c, self.ALLPASS_GAIN, 1)
+             for d in self.ALLPASS_TUNINGS]
+            for c in range(channels)
+        ]
+        self.pre_hist = np.zeros((int(self.MAX_PREDELAY_S * sample_rate) + 1, channels),
+                                 dtype=np.float32)
+        self.room_size = 0.5
+        self.damping = 0.5
+        self.width = 1.0
+        self.predelay_s = 0.0
 
     def process(self, x, wet):
-        wet_sig = sum(c.process(x) for c in self.combs) / len(self.combs)
-        for ap in self.allpasses:
-            wet_sig = ap.process(wet_sig)
-        return x + wet * wet_sig
+        d = int(np.clip(self.predelay_s, 0.0, self.MAX_PREDELAY_S) * self.sr)
+        hist = np.concatenate([self.pre_hist, x])
+        xin = hist[len(hist) - len(x) - d:len(hist) - d]
+        self.pre_hist = hist[-len(self.pre_hist):]
+
+        feedback = 0.7 + 0.28 * min(float(self.room_size), 0.98)
+        damp = 0.4 * float(np.clip(self.damping, 0.0, 1.0))
+
+        wet_sig = np.empty_like(x, dtype=np.float64)
+        for c in range(self.channels):
+            ch = self.WET_SCALE * sum(
+                comb.process(xin[:, c], feedback, damp) for comb in self.combs[c])
+            ch = ch[:, None]
+            for ap in self.allpasses[c]:
+                ch = ap.process(ch)
+            wet_sig[:, c] = ch[:, 0]
+
+        if self.channels == 2:
+            w1 = float(self.width) / 2.0 + 0.5
+            w2 = (1.0 - float(self.width)) / 2.0
+            left = wet_sig[:, 0] * w1 + wet_sig[:, 1] * w2
+            right = wet_sig[:, 1] * w1 + wet_sig[:, 0] * w2
+            wet_sig = np.stack([left, right], axis=1)
+
+        return x + wet * wet_sig.astype(np.float32)
 
 
 class EffectChain:
@@ -151,13 +227,22 @@ class EffectChain:
         self.delay = Delay(sample_rate, channels)
         self.reverb = Reverb(sample_rate, channels)
 
-    def set_amounts(self, chorus=None, delay=None, reverb=None):
+    def set_amounts(self, chorus=None, delay=None, reverb=None, reverb_room=None,
+                    reverb_damp=None, reverb_width=None, reverb_predelay=None):
         if chorus is not None:
             self.chorus_amt = float(chorus)
         if delay is not None:
             self.delay_amt = float(delay)
         if reverb is not None:
             self.reverb_amt = float(reverb)
+        if reverb_room is not None:
+            self.reverb.room_size = float(reverb_room)
+        if reverb_damp is not None:
+            self.reverb.damping = float(reverb_damp)
+        if reverb_width is not None:
+            self.reverb.width = float(reverb_width)
+        if reverb_predelay is not None:
+            self.reverb.predelay_s = float(reverb_predelay)
 
     @property
     def active(self):
@@ -179,17 +264,23 @@ class EffectChain:
 
 
 def apply_effects_offline(audio, sample_rate, chorus=0.0, delay=0.0, reverb=0.0,
-                          tail_seconds=1.5):
+                          tail_seconds=1.5, reverb_room=0.5, reverb_damp=0.5,
+                          reverb_width=1.0, reverb_predelay=0.0):
     """
     One-shot convenience for the Generate path. Appends silence so delay and
-    reverb tails ring out, then runs the buffer through a fresh chain.
+    reverb tails ring out (bigger rooms get a longer tail), then runs the
+    buffer through a fresh chain.
     """
     if not (chorus > 0 or delay > 0 or reverb > 0):
         return audio
     if audio.ndim == 1:
         audio = audio[:, None]
+    if reverb > 0:
+        tail_seconds = max(tail_seconds, 1.5 + 6.0 * float(reverb_room))
     tail = np.zeros((int(tail_seconds * sample_rate), audio.shape[1]), dtype=np.float32)
     padded = np.concatenate([audio, tail])
     chain = EffectChain(sample_rate, audio.shape[1])
-    chain.set_amounts(chorus=chorus, delay=delay, reverb=reverb)
+    chain.set_amounts(chorus=chorus, delay=delay, reverb=reverb,
+                      reverb_room=reverb_room, reverb_damp=reverb_damp,
+                      reverb_width=reverb_width, reverb_predelay=reverb_predelay)
     return chain.process(padded)

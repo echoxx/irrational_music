@@ -40,7 +40,8 @@ from irrational import (
 from live import LivePlayer
 from modulation import MOD_TARGET_CHOICES, build_note_sequence
 from presets import load_presets, save_preset
-from synth import WAVEFORM_CHOICES, render_sequence
+from synth import (FM_PRESET_CHOICES, WAVEFORM_CHOICES, render_sequence,
+                   resolve_fm_ratio)
 
 SAMPLE_RATE = 44100
 
@@ -75,7 +76,9 @@ def get_digits_for_mode(constant, num_digits, mode):
 def render_voice(constant, num_digits, mode, base_freq, subdivisions,
                  base_params, envelope, crossfade, adsr,
                  chord_size=1, chord_step=2,
-                 mod_constant="none", mod_targets=(), mod_depth=0.5):
+                 mod_constant="none", mod_targets=(), mod_depth=0.5,
+                 harm_constant="none", harm_slide=False, harm_offset=0,
+                 harm_rolloff=0.5):
     """Render one voice (carrier or counterpoint) to a stereo buffer."""
     num_digits = int(num_digits)
     subdivisions = max(1, int(subdivisions))
@@ -87,10 +90,16 @@ def render_voice(constant, num_digits, mode, base_freq, subdivisions,
         # The modulator always advances one *single* digit per carrier note.
         mod_digits = get_irrational_digits(mod_constant, num_digits)
 
+    harm_digits = None
+    if harm_constant != "none":
+        harm_digits = get_irrational_digits(harm_constant, num_digits)
+
     notes = build_note_sequence(
         digits, freq_table, base_params,
         chord_size=int(chord_size), chord_step=int(chord_step),
         mod_digits=mod_digits, mod_targets=tuple(mod_targets), mod_depth=mod_depth,
+        harm_digits=harm_digits, harm_slide=bool(harm_slide),
+        harm_offset=int(harm_offset), harm_rolloff=float(harm_rolloff),
     )
     return render_sequence(
         notes, sample_rate=SAMPLE_RATE,
@@ -108,13 +117,16 @@ def mix_buffers(a, b):
 
 
 def synthesize(constant, num_digits, mode, base_freq, subdivisions, duration, crossfade, volume,
-               waveform="sine", pulse_width=0.3, brightness=0.0, fm_depth=0.0, fm_ratio=2.0,
+               waveform="sine", pulse_width=0.3, morph=0.0,
+               brightness=0.0, fm_depth=0.0, fm_ratio=2.0, fm_preset="custom",
+               harm_constant="none", harm_slide=False, harm_offset=0, harm_rolloff=0.5,
                envelope="crossfade", attack=0.005, decay=0.04, sustain=0.7, release=0.04,
                chord_size=1, chord_step=2, pan=0.0,
                mod_constant="none", mod_targets=(), mod_depth=0.5,
                cp_constant="none", cp_mode="harmonic_series", cp_base_freq=0,
                cp_waveform="sine", cp_volume=0.15, cp_pan=0.5, cp_duration=0,
                fx_chorus=0.0, fx_delay=0.0, fx_reverb=0.0,
+               fx_room_size=0.5, fx_damping=0.5, fx_width=1.0, fx_predelay=0.0,
                log_freq=False):
     plt.close("all")  # release figures from previous calls
     duration = float(duration)
@@ -128,15 +140,18 @@ def synthesize(constant, num_digits, mode, base_freq, subdivisions, duration, cr
         "pan": float(pan),
         "waveform": waveform,
         "pulse_width": float(pulse_width),
+        "morph": float(morph),
         "brightness": float(brightness),
         "fm_depth": float(fm_depth),
-        "fm_ratio": float(fm_ratio),
+        "fm_ratio": resolve_fm_ratio(fm_preset, fm_ratio),
     }
     audio = render_voice(
         constant, num_digits, mode, base_freq, subdivisions,
         base_params, envelope, crossfade, adsr,
         chord_size=chord_size, chord_step=chord_step,
         mod_constant=mod_constant, mod_targets=mod_targets, mod_depth=float(mod_depth),
+        harm_constant=harm_constant, harm_slide=harm_slide,
+        harm_offset=harm_offset, harm_rolloff=harm_rolloff,
     )
 
     title_parts = [f"{IRRATIONAL_CONSTANTS[constant][0]} — {mode}, {int(num_digits)} "
@@ -151,9 +166,10 @@ def synthesize(constant, num_digits, mode, base_freq, subdivisions, duration, cr
             "pan": float(cp_pan),
             "waveform": cp_waveform,
             "pulse_width": float(pulse_width),
+            "morph": float(morph),
             "brightness": float(brightness),
             "fm_depth": float(fm_depth),
-            "fm_ratio": float(fm_ratio),
+            "fm_ratio": resolve_fm_ratio(fm_preset, fm_ratio),
         }
         cp_audio = render_voice(
             cp_constant, num_digits, cp_mode,
@@ -166,6 +182,8 @@ def synthesize(constant, num_digits, mode, base_freq, subdivisions, duration, cr
     audio = apply_effects_offline(
         audio, SAMPLE_RATE,
         chorus=float(fx_chorus), delay=float(fx_delay), reverb=float(fx_reverb),
+        reverb_room=float(fx_room_size), reverb_damp=float(fx_damping),
+        reverb_width=float(fx_width), reverb_predelay=float(fx_predelay),
     )
 
     title = "  |  ".join(title_parts)
@@ -235,13 +253,16 @@ def visuals_tick(log_freq):
 PARAM_KEYS = [
     "constant", "num_digits", "mode", "base_freq", "subdivisions", "duration",
     "crossfade", "volume",
-    "waveform", "pulse_width", "brightness", "fm_depth", "fm_ratio",
+    "waveform", "pulse_width", "morph",
+    "brightness", "fm_depth", "fm_ratio", "fm_preset",
+    "harm_constant", "harm_slide", "harm_offset", "harm_rolloff",
     "envelope", "attack", "decay", "sustain", "release",
     "chord_size", "chord_step", "pan",
     "mod_constant", "mod_targets", "mod_depth",
     "cp_constant", "cp_mode", "cp_base_freq", "cp_waveform", "cp_volume",
     "cp_pan", "cp_duration",
     "fx_chorus", "fx_delay", "fx_reverb",
+    "fx_room_size", "fx_damping", "fx_width", "fx_predelay",
     "log_freq",
 ]
 # Live-only keys (not part of synthesize()'s signature; Generate plays the
@@ -249,7 +270,8 @@ PARAM_KEYS = [
 LIVE_ONLY_KEYS = ["loop_mode"]
 LIVE_KEYS = [k for k in PARAM_KEYS if k not in ("crossfade", "log_freq")] + LIVE_ONLY_KEYS
 # Controls whose change requires re-fetching digit streams (mpmath work).
-REFRESH_KEYS = {"constant", "num_digits", "mode", "mod_constant", "cp_constant", "cp_mode"}
+REFRESH_KEYS = {"constant", "num_digits", "mode", "mod_constant", "cp_constant", "cp_mode",
+                "harm_constant"}
 
 
 def start_live(*vals):
@@ -270,6 +292,13 @@ def start_live(*vals):
 def stop_live():
     live_player.stop()
     return "Live: stopped", gr.Timer(active=False)
+
+
+def restart_live():
+    if not live_player.is_running:
+        return "Live: stopped — start Live first, then Restart rewinds it"
+    live_player.restart_sequence()
+    return "**Live: running** — restarted from the first digit"
 
 
 def start_recording(*vals):
@@ -371,15 +400,22 @@ with gr.Blocks(title="Irrational Sonification") as demo:
                     )
 
                 with gr.Tab("Timbre"):
-                    waveform = gr.Radio(choices=WAVEFORM_CHOICES, value="sine", label="Waveform")
+                    waveform = gr.Radio(choices=WAVEFORM_CHOICES + ["morph"], value="sine",
+                                        label="Waveform ('morph' blends them continuously)")
                     pulse_width = gr.Slider(minimum=0.05, maximum=0.95, value=0.3, step=0.05,
                                             label="Pulse width", visible=False)
+                    morph = gr.Slider(minimum=0.0, maximum=1.0, value=0.0, step=0.01,
+                                      label="Morph (sine → tri → saw → square → pulse)",
+                                      visible=False)
                     brightness = gr.Slider(minimum=0.0, maximum=1.0, value=0.0, step=0.05,
                                            label="Brightness (added harmonics)")
                     fm_depth = gr.Slider(minimum=0.0, maximum=8.0, value=0.0, step=0.1,
                                          label="FM depth")
                     fm_ratio = gr.Slider(minimum=0.25, maximum=8.0, value=2.0, step=0.25,
                                          label="FM ratio (modulator/carrier)")
+                    fm_preset = gr.Dropdown(choices=FM_PRESET_CHOICES, value="custom",
+                                            label="FM ratio preset (irrational ratios → "
+                                                  "inharmonic, bell-like timbres)")
                     envelope = gr.Radio(choices=[("Crossfade (smooth overlap)", "crossfade"),
                                                  ("ADSR (shaped notes)", "adsr")],
                                         value="crossfade", label="Envelope")
@@ -399,6 +435,19 @@ with gr.Blocks(title="Irrational Sonification") as demo:
                                                label="Chord size (1 = single notes)")
                         chord_step = gr.Slider(minimum=1, maximum=4, value=2, step=1,
                                                label="Chord stacking step (scale degrees)")
+                    gr.Markdown("---\n**Digit harmonics** — the digits of a constant set "
+                                "the amplitudes of harmonics 1–16, so you hear its spectrum. "
+                                "Overrides waveform, morph, and brightness (FM still applies).")
+                    harm_constant = gr.Dropdown(choices=NONE_PLUS_CONSTANTS, value="none",
+                                                label="Spectrum constant")
+                    harm_slide = gr.Checkbox(value=False,
+                                             label="Sliding window (spectrum evolves "
+                                                   "note by note)")
+                    with gr.Row():
+                        harm_offset = gr.Slider(minimum=0, maximum=200, value=0, step=1,
+                                                label="Window offset (digit index)")
+                        harm_rolloff = gr.Slider(minimum=0.0, maximum=2.0, value=0.5, step=0.05,
+                                                 label="Rolloff (1/k^r, tames harshness)")
 
                 with gr.Tab("Modulation"):
                     gr.Markdown("One constant modulates another: the modulator's digits "
@@ -436,6 +485,16 @@ with gr.Blocks(title="Irrational Sonification") as demo:
                                          label="Delay (feedback echo)")
                     fx_reverb = gr.Slider(minimum=0.0, maximum=1.0, value=0.0, step=0.05,
                                           label="Reverb")
+                    with gr.Row():
+                        fx_room_size = gr.Slider(minimum=0.0, maximum=1.0, value=0.5, step=0.01,
+                                                 label="Reverb room size")
+                        fx_damping = gr.Slider(minimum=0.0, maximum=1.0, value=0.5, step=0.01,
+                                               label="Reverb damping (high-freq absorption)")
+                    with gr.Row():
+                        fx_width = gr.Slider(minimum=0.0, maximum=1.0, value=1.0, step=0.01,
+                                             label="Reverb stereo width")
+                        fx_predelay = gr.Slider(minimum=0.0, maximum=0.25, value=0.0, step=0.005,
+                                                label="Reverb pre-delay (s)")
 
                 with gr.Tab("Visuals"):
                     log_freq = gr.Checkbox(value=False,
@@ -451,6 +510,7 @@ with gr.Blocks(title="Irrational Sonification") as demo:
             )
             with gr.Row():
                 start_btn = gr.Button("Start Live", variant="primary")
+                restart_btn = gr.Button("⟲ Restart (digit 1)")
                 stop_btn = gr.Button("Stop Live")
             live_status = gr.Markdown("Live: stopped")
             gr.Markdown(
@@ -477,8 +537,11 @@ with gr.Blocks(title="Irrational Sonification") as demo:
         "constant": constant, "num_digits": num_digits, "mode": mode,
         "base_freq": base_freq, "subdivisions": subdivisions, "duration": duration,
         "crossfade": crossfade, "volume": volume,
-        "waveform": waveform, "pulse_width": pulse_width, "brightness": brightness,
-        "fm_depth": fm_depth, "fm_ratio": fm_ratio,
+        "waveform": waveform, "pulse_width": pulse_width, "morph": morph,
+        "brightness": brightness,
+        "fm_depth": fm_depth, "fm_ratio": fm_ratio, "fm_preset": fm_preset,
+        "harm_constant": harm_constant, "harm_slide": harm_slide,
+        "harm_offset": harm_offset, "harm_rolloff": harm_rolloff,
         "envelope": envelope, "attack": attack, "decay": decay, "sustain": sustain,
         "release": release,
         "chord_size": chord_size, "chord_step": chord_step, "pan": pan,
@@ -487,6 +550,8 @@ with gr.Blocks(title="Irrational Sonification") as demo:
         "cp_waveform": cp_waveform, "cp_volume": cp_volume, "cp_pan": cp_pan,
         "cp_duration": cp_duration,
         "fx_chorus": fx_chorus, "fx_delay": fx_delay, "fx_reverb": fx_reverb,
+        "fx_room_size": fx_room_size, "fx_damping": fx_damping,
+        "fx_width": fx_width, "fx_predelay": fx_predelay,
         "log_freq": log_freq,
         "loop_mode": loop_mode,
     }
@@ -496,8 +561,13 @@ with gr.Blocks(title="Irrational Sonification") as demo:
     # conditional visibility
     mode.change(fn=lambda m: gr.update(visible=(m == "microtonal")),
                 inputs=mode, outputs=subdivisions)
-    waveform.change(fn=lambda w: gr.update(visible=(w == "pulse")),
-                    inputs=waveform, outputs=pulse_width)
+    waveform.change(
+        fn=lambda w: (gr.update(visible=(w in ("pulse", "morph"))),
+                      gr.update(visible=(w == "morph"))),
+        inputs=waveform, outputs=[pulse_width, morph],
+    )
+    fm_preset.change(fn=lambda pr: gr.update(visible=(pr == "custom")),
+                     inputs=fm_preset, outputs=fm_ratio)
     envelope.change(
         fn=lambda e: (gr.update(visible=(e == "adsr")), gr.update(visible=(e == "crossfade"))),
         inputs=envelope, outputs=[adsr_row, crossfade],
@@ -510,6 +580,7 @@ with gr.Blocks(title="Irrational Sonification") as demo:
     btn.click(fn=synthesize, inputs=synth_inputs, outputs=[audio_out, spec_out])
 
     start_btn.click(fn=start_live, inputs=live_inputs, outputs=[live_status, timer])
+    restart_btn.click(fn=restart_live, outputs=live_status)
     stop_btn.click(fn=stop_live, outputs=[live_status, timer])
 
     record_btn.click(fn=start_recording, inputs=live_inputs, outputs=[record_status, timer])

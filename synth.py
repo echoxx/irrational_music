@@ -20,23 +20,87 @@ from scipy import signal as sps
 
 WAVEFORM_CHOICES = ["sine", "sawtooth", "square", "triangle", "pulse"]
 
+# Crossfade order for the continuous 'morph' control (mellow → buzzy).
+# Deliberately separate from WAVEFORM_CHOICES, whose order drives the
+# digit % 5 mapping in modulation.apply_waveform and existing presets.
+MORPH_ORDER = ["sine", "triangle", "sawtooth", "square", "pulse"]
+
+# Number of partials in digit-driven additive synthesis (see harmonic_amps).
+NUM_HARMONICS = 16
+
+# Inharmonic FM modulator/carrier ratios — the constants shape the overtones.
+FM_RATIO_PRESETS = {
+    "pi": float(np.pi),
+    "phi": float((1.0 + 5.0 ** 0.5) / 2.0),
+    "sqrt2": float(2.0 ** 0.5),
+    "e": float(np.e),
+}
+FM_PRESET_CHOICES = [
+    ("Custom (slider)", "custom"),
+    ("π ≈ 3.14159", "pi"),
+    ("φ ≈ 1.61803", "phi"),
+    ("√2 ≈ 1.41421", "sqrt2"),
+    ("e ≈ 2.71828", "e"),
+]
+
 # Default ADSR used when envelope mode is 'adsr' and no override is given.
 DEFAULT_ADSR = (0.005, 0.04, 0.7, 0.04)  # attack, decay, sustain level, release
 
 
+def resolve_fm_ratio(preset, ratio):
+    """Return the FM ratio for a preset key, or the slider value for 'custom'."""
+    return FM_RATIO_PRESETS[preset] if preset in FM_RATIO_PRESETS else float(ratio)
+
+
+def harmonic_amps(digits, rolloff=0.5):
+    """
+    Map a window of digits to additive-synthesis partial amplitudes.
+
+    Harmonic k (1-based) gets amplitude (digit_{k-1} / 9) / k**rolloff — the
+    rolloff tames harshness from strong high partials. An all-zero window
+    falls back to a pure fundamental so a note is never silent.
+    """
+    a = np.array([(int(d) % 10) / 9.0 for d in digits[:NUM_HARMONICS]],
+                 dtype=np.float64)
+    a /= np.arange(1, len(a) + 1, dtype=np.float64) ** float(rolloff)
+    if a.sum() <= 1e-9:
+        a[0] = 1.0
+    return a
+
+
+def _basic_wave(phase, waveform, pulse_width):
+    """Render one of the discrete WAVEFORM_CHOICES from a phase array."""
+    if waveform == "sine":
+        return np.sin(phase)
+    elif waveform == "sawtooth":
+        return sps.sawtooth(phase)
+    elif waveform == "square":
+        return sps.square(phase)
+    elif waveform == "triangle":
+        return sps.sawtooth(phase, width=0.5)
+    elif waveform == "pulse":
+        return sps.square(phase, duty=np.clip(pulse_width, 0.05, 0.95))
+    raise ValueError(f"Unknown waveform '{waveform}'. Choose from: {WAVEFORM_CHOICES}")
+
+
 def render_wave(phase, waveform="sine", pulse_width=0.3, brightness=0.0,
-                fm_depth=0.0, fm_ratio=2.0):
+                fm_depth=0.0, fm_ratio=2.0, morph=0.0, harmonics=None):
     """
     Render samples from a phase array (radians).
 
     Parameters:
     phase (np.array): Instantaneous phase in radians (any offset is fine)
-    waveform (str): One of WAVEFORM_CHOICES
+    waveform (str): One of WAVEFORM_CHOICES, or 'morph' (see morph)
     pulse_width (float): Duty cycle for 'pulse' (0..1)
     brightness (float): 0 = pure waveform; >0 adds harmonics k=2..8 at
         amplitude brightness/k (then renormalized), enriching the spectrum
     fm_depth (float): Phase-modulation index in radians (0 = off)
     fm_ratio (float): Modulator/carrier frequency ratio for FM
+    morph (float): When waveform == 'morph', position 0..1 crossfading
+        through MORPH_ORDER (sine → triangle → sawtooth → square → pulse)
+    harmonics (np.array | None): Additive partial amplitudes for harmonics
+        1..len(harmonics). When given, the spectrum is fully specified —
+        waveform, morph, and brightness are ignored (FM still applies).
 
     Returns:
     np.array (float32): Samples in [-1, 1]
@@ -45,18 +109,23 @@ def render_wave(phase, waveform="sine", pulse_width=0.3, brightness=0.0,
     if fm_depth > 0.0:
         phase = phase + fm_depth * np.sin(fm_ratio * phase)
 
-    if waveform == "sine":
-        out = np.sin(phase)
-    elif waveform == "sawtooth":
-        out = sps.sawtooth(phase)
-    elif waveform == "square":
-        out = sps.square(phase)
-    elif waveform == "triangle":
-        out = sps.sawtooth(phase, width=0.5)
-    elif waveform == "pulse":
-        out = sps.square(phase, duty=np.clip(pulse_width, 0.05, 0.95))
+    if harmonics is not None and len(harmonics):
+        out = np.zeros_like(phase)
+        for k, amp in enumerate(harmonics):
+            if amp > 0.0:
+                out += amp * np.sin((k + 1) * phase)
+        out /= max(float(np.sum(harmonics)), 1e-9)
+        return out.astype(np.float32)
+
+    if waveform == "morph":
+        pos = float(np.clip(morph, 0.0, 1.0)) * (len(MORPH_ORDER) - 1)
+        i = min(int(pos), len(MORPH_ORDER) - 2)
+        frac = pos - i
+        out = (1.0 - frac) * _basic_wave(phase, MORPH_ORDER[i], pulse_width)
+        if frac > 0.0:
+            out += frac * _basic_wave(phase, MORPH_ORDER[i + 1], pulse_width)
     else:
-        raise ValueError(f"Unknown waveform '{waveform}'. Choose from: {WAVEFORM_CHOICES}")
+        out = _basic_wave(phase, waveform, pulse_width)
 
     if brightness > 0.0:
         total = 1.0
@@ -106,7 +175,7 @@ def pan_gains(pan):
 
 def render_note(freqs, num_samples, sample_rate, waveform="sine",
                 pulse_width=0.3, brightness=0.0, fm_depth=0.0, fm_ratio=2.0,
-                vibrato_depth=0.0, vibrato_rate=5.0):
+                vibrato_depth=0.0, vibrato_rate=5.0, morph=0.0, harmonics=None):
     """
     Render one (possibly chordal) note as mono float32.
 
@@ -123,7 +192,8 @@ def render_note(freqs, num_samples, sample_rate, waveform="sine",
             phase = 2.0 * np.pi * np.cumsum(inst) / sample_rate
         else:
             phase = 2.0 * np.pi * freq * t
-        out += render_wave(phase, waveform, pulse_width, brightness, fm_depth, fm_ratio)
+        out += render_wave(phase, waveform, pulse_width, brightness, fm_depth,
+                           fm_ratio, morph=morph, harmonics=harmonics)
     return out / max(1, len(freqs))
 
 
@@ -137,8 +207,9 @@ def render_sequence(notes, sample_rate=44100, envelope="crossfade",
       duration (float)     — seconds
       volume (float)       — per-note amplitude (default 0.3)
       pan (float)          — -1..+1, only used when stereo=True (default 0)
-      waveform, pulse_width, brightness, fm_depth, fm_ratio,
-      vibrato_depth, vibrato_rate — per-note timbre (see render_note)
+      waveform, pulse_width, brightness, fm_depth, fm_ratio, morph,
+      harmonics, vibrato_depth, vibrato_rate — per-note timbre (see
+      render_note; 'harmonics' overrides waveform/morph/brightness)
 
     envelope: 'crossfade' overlaps notes with cos^2 fades (the classic
     behavior); 'adsr' shapes each note with adsr_envelope and places notes
@@ -181,6 +252,8 @@ def render_sequence(notes, sample_rate=44100, envelope="crossfade",
             fm_ratio=note.get("fm_ratio", 2.0),
             vibrato_depth=note.get("vibrato_depth", 0.0),
             vibrato_rate=note.get("vibrato_rate", 5.0),
+            morph=note.get("morph", 0.0),
+            harmonics=note.get("harmonics"),
         )
         tone = tone * float(note.get("volume", 0.3))
 
